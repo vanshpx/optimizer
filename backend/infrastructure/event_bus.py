@@ -9,7 +9,11 @@ class Event:
     payload: Any
     timestamp: datetime = datetime.now()
 
-class EventBus:
+class InfrastructureEventBus:
+    """
+    In-memory implementation.
+    Defines its own Transport Event type to keep Core pure.
+    """
     def __init__(self):
         self._subscribers: Dict[str, List[Callable[[Event], Awaitable[None]]]] = {}
 
@@ -21,8 +25,4 @@ class EventBus:
     async def publish(self, topic: str, payload: Any):
         event = Event(topic=topic, payload=payload)
         if topic in self._subscribers:
-            # Execute all handlers for this topic concurrently
             await asyncio.gather(*[handler(event) for handler in self._subscribers[topic]])
-        
-        # Also publish to global "*" topic if needed, or simple logging
-        # print(f"Event published: {topic}")

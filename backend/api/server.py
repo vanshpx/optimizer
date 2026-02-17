@@ -4,7 +4,7 @@ from typing import Dict, Any, List
 import asyncio
 
 # Import your agent system here
-# from agents.main import ... (adjust imports as needed based on your actual structure)
+# from orchestrator.orchestrator import ... (adjust imports as needed)
 
 app = FastAPI(title="TBO Agent System API")
 
