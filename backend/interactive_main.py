@@ -108,9 +108,10 @@ async def interactive_loop():
 
             elif cmd == "delay":
                  mins = int(parts[1]) if len(parts) > 1 else 30
-                 d = monitor_agent.simulate_delay(mins)
+                 current_sim_time = state_agent.get_state_snapshot().current_time
+                 d = monitor_agent.detect_external_delay(None, mins, current_sim_time)
                  await bus.publish("INJECT_DISRUPTION", d)
-                 print(f"💥 Injecting {mins}m Traffic Delay signal...")
+                 print(f"Injected {mins}m delay.")
                  await orchestrator.process_cycle()
                  
             else:

@@ -41,7 +41,7 @@ class OrchestratorAgent:
         current_state = self.state_agent.get_state_snapshot()
         
         # 2. Detect Internal Disruptions
-        disruptions = self.monitor.detect_disruptions(current_state)
+        disruptions = self.monitor.detect(current_state)
         
         # Add External
         if self.pending_disruptions:

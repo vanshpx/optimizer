@@ -1,35 +1,46 @@
-from datetime import timedelta
-from typing import List
-from core.models import StateSnapshot, Task, TaskStatus
+from datetime import datetime
+from typing import List, Optional
+
+from core.models import StateSnapshot
 from core.enums import DisruptionType
 from core.events import DisruptionEvent
 
 class MonitoringAgent:
-    def detect_disruptions(self, state: StateSnapshot) -> List[DisruptionEvent]:
-        disruptions = []
-        current_time = state.current_time
-        
-        for task in state.itinerary.tasks:
-            if task.status == TaskStatus.PLANNED:
-                # If we are 15 mins past start time
-                if current_time > task.start_time + timedelta(minutes=15):
-                    print(f"[Monitoring] ⚠️ Potential Disruption: Task {task.id} late start.")
-                    disruptions.append(DisruptionEvent(
-                        type=DisruptionType.LATE_ARRIVAL,
-                        task_id=task.id,
-                        detected_at=current_time,
-                        metadata={"severity": "HIGH"}
-                    ))
-        return disruptions
-    
-    def simulate_delay(self, minutes: int) -> DisruptionEvent:
-        print(f"[Monitoring] 🚦 SIMULATION: Creating {minutes} min delay signal.")
-        # Simulating external delay (Traffic)
+    """
+    Pure signal adapter.
+    Translates external signals into DisruptionEvents.
+    No internal state. No internal detection of missed tasks.
+    Time must be provided explicitly for determinism.
+    """
+
+    def detect(self, snapshot: StateSnapshot) -> List[DisruptionEvent]:
+        """
+        No-op by default as requested.
+        Internal state (MISSED, LATE_ARRIVAL) is handled by StateAgent history.
+        Future extensions can add logic here if needed.
+        """
+        return []
+
+    def detect_external_closure(self, task_id: Optional[str], detected_at: datetime) -> DisruptionEvent:
+        return DisruptionEvent(
+            type=DisruptionType.CLOSED,
+            task_id=task_id,
+            detected_at=detected_at,
+            metadata={"closure_time": detected_at}
+        )
+
+    def detect_external_delay(self, task_id: Optional[str], minutes: int, detected_at: datetime) -> DisruptionEvent:
         return DisruptionEvent(
             type=DisruptionType.DELAY,
-            task_id=None,
-            detected_at=None, # Filled by caller or now?
-            # detected_at is datetime.
-            # I need datetime.now()
-            metadata={"delay_minutes": minutes, "severity": "MEDIUM"}
+            task_id=task_id,
+            detected_at=detected_at,
+            metadata={"delay_minutes": minutes}
+        )
+
+    def detect_external_weather(self, task_id: Optional[str], severity: str, detected_at: datetime) -> DisruptionEvent:
+        return DisruptionEvent(
+            type=DisruptionType.WEATHER,
+            task_id=task_id,
+            detected_at=detected_at,
+            metadata={"severity": severity}
         )

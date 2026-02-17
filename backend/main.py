@@ -60,7 +60,8 @@ async def main():
     state_agent.confirm_task("1")
     
     print("\n--- 💥 Injecting Major Disruption (45m Delay) ---")
-    disruption = monitor_agent.simulate_delay(45)
+    current_sim_time = state_agent.get_state_snapshot().current_time
+    disruption = monitor_agent.detect_external_delay(None, 45, current_sim_time)
     await bus.publish("INJECT_DISRUPTION", disruption)
     
     await orchestrator.process_cycle()
