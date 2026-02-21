@@ -1,7 +1,6 @@
 "use client";
 
 import { Bell, Search, User } from "lucide-react";
-import { Input } from "@/components/ui/Input";
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 
@@ -9,32 +8,88 @@ export default function TopBar() {
     const [searchQuery, setSearchQuery] = useState("");
 
     return (
-        <header className="h-16 bg-white/90 backdrop-blur-md border-b border-gray-200 flex items-center justify-between px-6 sticky top-0 z-20">
-            {/* Search */}
-            <div className="relative w-96">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <Input
-                    className="pl-10 bg-gray-50 border-gray-200 focus:bg-white transition-colors"
-                    placeholder="Search trips, clients, or destinations..."
+        <header style={{
+            height: 56,
+            background: "var(--topbar-bg)",
+            borderBottom: "1px solid var(--topbar-border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "0 24px",
+            position: "sticky",
+            top: 0,
+            zIndex: 20,
+            boxShadow: "0 1px 2px rgba(16,24,40,0.02)",
+        }}>
+            {/* Product search */}
+            <div style={{ position: "relative", width: 320 }}>
+                <Search style={{
+                    position: "absolute",
+                    left: 10,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    width: 15,
+                    height: 15,
+                    color: "#9ca3af",
+                    pointerEvents: "none",
+                }} />
+                <input
+                    type="text"
+                    placeholder="Search trips, clients…"
                     value={searchQuery}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value)}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    style={{
+                        width: "100%",
+                        height: 40,
+                        paddingLeft: 38,
+                        paddingRight: 12,
+                        background: "#ffffff",
+                        border: "1px solid var(--topbar-border)",
+                        borderRadius: 6,
+                        fontSize: "14px",
+                        fontWeight: 500,
+                        color: "var(--text-primary)",
+                        outline: "none",
+                        transition: "border-color 150ms ease, box-shadow 150ms ease",
+                    }}
+                    onFocus={e => {
+                        e.currentTarget.style.borderColor = "var(--brand)";
+                        e.currentTarget.style.boxShadow = "0 0 0 2px rgba(37, 99, 235, 0.06)";
+                    }}
+                    onBlur={e => {
+                        e.currentTarget.style.borderColor = "var(--topbar-border)";
+                        e.currentTarget.style.boxShadow = "none";
+                    }}
                 />
             </div>
 
-            {/* Actions */}
-            <div className="flex items-center gap-4">
-                <Button variant="ghost" size="icon" className="text-gray-500 hover:text-primary-600" onClick={() => alert("Notifications clicked!")}>
-                    <Bell className="w-5 h-5" />
+            {/* Right: actions + user */}
+            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                <Button variant="ghost" size="icon" style={{ color: "#6b7280" }} onClick={() => alert("Notifications clicked!")}>
+                    <Bell style={{ width: 18, height: 18 }} />
                 </Button>
 
-                <div className="flex items-center gap-3 pl-4 border-l border-gray-200">
-                    <div className="text-right hidden md:block">
-                        <p className="text-sm font-bold text-gray-900">Alex Walker</p>
-                        <p className="text-xs text-gray-500">Senior Agent</p>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, paddingLeft: 16, borderLeft: "1px solid var(--topbar-border)" }}>
+                    <div style={{ textAlign: "right" }}>
+                        <p style={{ fontSize: "var(--text-md)", fontWeight: 600, color: "var(--text-primary)", margin: 0 }}>Alex Walker</p>
+                        <p style={{ fontSize: "var(--text-sm)", color: "var(--text-tertiary)", fontWeight: 400, margin: 0 }}>Senior Agent</p>
                     </div>
-                    <Button variant="secondary" size="icon" className="rounded-full w-10 h-10 bg-gray-100 border-gray-200" onClick={() => alert("Profile settings")}>
-                        <User className="w-5 h-5 text-gray-600" />
-                    </Button>
+                    <button
+                        onClick={() => alert("Profile settings")}
+                        style={{
+                            width: 34,
+                            height: 34,
+                            borderRadius: "50%",
+                            background: "var(--page-bg)",
+                            border: "1px solid var(--topbar-border)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            cursor: "pointer",
+                        }}
+                    >
+                        <User style={{ width: 16, height: 16, color: "var(--text-secondary)" }} />
+                    </button>
                 </div>
             </div>
         </header>

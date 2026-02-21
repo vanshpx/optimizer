@@ -21,7 +21,6 @@ export default function ClientDetailsForm({ formData, onChange, readOnly = false
     return (
         <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm mb-8">
             <h2 className="text-xl font-bold mb-4 text-gray-900 flex items-center gap-2">
-                <span className="w-2 h-8 bg-primary-600 rounded-full" />
                 Client Details
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

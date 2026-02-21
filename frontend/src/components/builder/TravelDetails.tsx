@@ -31,7 +31,6 @@ export default function TravelDetails({ departure, returnTrip, onChange, disable
     return (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-6">
             <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                <span className="w-2 h-8 bg-primary-600 rounded-full" />
                 Travel Details
             </h2>
 

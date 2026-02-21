@@ -55,7 +55,6 @@ export default function HotelStays({ stays, onChange }: HotelStaysProps) {
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-6">
             <div className="flex justify-between items-center">
                 <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                    <span className="w-2 h-8 bg-primary-600 rounded-full" />
                     Hotel Stays
                 </h2>
                 <Button onClick={addStay} size="sm" variant="outline" className="border-dashed">

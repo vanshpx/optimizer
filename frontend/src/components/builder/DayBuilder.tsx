@@ -177,8 +177,8 @@ export default function DayBuilder({ days, onChange, startDate, stays = [], isAc
             </div>
 
             {!isCompleted && !isActive && (
-                <Button onClick={addDay} size="lg" className="w-full py-8 text-lg font-medium bg-white text-gray-900 hover:bg-gray-50 border border-gray-200 hover:border-primary-500 shadow-sm transition-all hover:text-primary-700">
-                    <Plus className="w-6 h-6 mr-2" />
+                <Button onClick={addDay} size="lg" className="w-full py-6 text-base font-semibold bg-white text-gray-900 hover:bg-gray-50 border border-gray-200 hover:border-gray-300 shadow-sm transition-all">
+                    <Plus className="w-5 h-5 mr-2" />
                     Add Another Day
                 </Button>
             )}

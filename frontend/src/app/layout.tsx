@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter_Tight } from "next/font/google";
 import "./globals.css";
 import { ItineraryProvider } from "@/context/ItineraryContext";
 
-const inter = Inter({
-  variable: "--font-inter",
+const interTight = Inter_Tight({
   subsets: ["latin"],
+  display: "swap",
+  weight: ["300", "400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
@@ -19,8 +20,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} font-sans antialiased`}>
+    <html lang="en" className={interTight.className} suppressHydrationWarning>
+      <body className="antialiased">
         <ItineraryProvider>
           {children}
         </ItineraryProvider>

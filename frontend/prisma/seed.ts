@@ -367,8 +367,93 @@ const itineraries = [
                 }
             ]
         }
+    },
+    {
+
+        client: "Vikram Singh",
+        destination: "Jaipur & Udaipur, Rajasthan",
+        status: "Upcoming",
+        dateRange: "24 Feb 2026 – 28 Feb 2026",
+        age: 36,
+        days: 5,
+        email: "vikram.singh@example.com",
+        mobile: "+91 97766 55443",
+        origin: "Mumbai",
+        from: "Mumbai",
+        to: "Jaipur",
+        totalDays: 5,
+        flights: {
+            create: [
+                { type: "Departure", date: "2026-02-24", airport: "BOM", airline: "IndiGo", flightNumber: "6E-2211", flightTime: "07:30", arrivalTime: "09:15", lat: 19.0886, lng: 72.8687 },
+                { type: "Return", date: "2026-02-28", airport: "UDR", airline: "Air India", flightNumber: "AI-677", flightTime: "18:00", arrivalTime: "20:00", lat: 24.6177, lng: 73.8961 }
+            ]
+        },
+        hotelStays: {
+            create: [
+                { hotelName: "Rambagh Palace", checkIn: "2026-02-24", checkOut: "2026-02-26", notes: "Heritage suite requested", lat: 26.8939, lng: 75.8069 },
+                { hotelName: "Taj Lake Palace", checkIn: "2026-02-26", checkOut: "2026-02-28", notes: "Lake view room", lat: 24.5762, lng: 73.6803 }
+            ]
+        },
+        itineraryDays: {
+            create: [
+                {
+                    dayNumber: 1,
+                    activities: {
+                        create: [
+                            { time: "10:00", title: "Arrival at Jaipur Airport", location: "Jaipur International Airport", notes: "Cab to Rambagh Palace", status: "upcoming", lat: 26.8242, lng: 75.8122 },
+                            { time: "13:00", title: "Check-in: Rambagh Palace", location: "Bhawani Singh Road, Jaipur", notes: "Heritage suite", status: "upcoming", lat: 26.8939, lng: 75.8069 },
+                            { time: "16:00", title: "Amber Fort", location: "Amer, Jaipur", notes: "Light & Sound show at 7:30 PM", status: "upcoming", lat: 26.9855, lng: 75.8513 },
+                            { time: "20:00", title: "Dinner at Chokhi Dhani", location: "Tonk Road, Jaipur", notes: "Traditional Rajasthani thali", status: "upcoming", lat: 26.7797, lng: 75.8454 }
+                        ]
+                    }
+                },
+                {
+                    dayNumber: 2,
+                    activities: {
+                        create: [
+                            { time: "09:00", title: "City Palace", location: "Tulsi Marg, Jaipur", notes: "Museum entry included", status: "upcoming", lat: 26.9259, lng: 75.8237 },
+                            { time: "11:00", title: "Hawa Mahal", location: "Hawa Mahal Road, Jaipur", notes: "Photography from outside", status: "upcoming", lat: 26.9239, lng: 75.8267 },
+                            { time: "14:00", title: "Jantar Mantar", location: "Connaught Circle, Jaipur", notes: "UNESCO World Heritage Site", status: "upcoming", lat: 26.9249, lng: 75.8243 },
+                            { time: "18:00", title: "Johari Bazaar Shopping", location: "Johari Bazaar, Jaipur", notes: "Jewellery and handicrafts", status: "upcoming", lat: 26.9217, lng: 75.8282 }
+                        ]
+                    }
+                },
+                {
+                    dayNumber: 3,
+                    activities: {
+                        create: [
+                            { time: "08:00", title: "Drive to Udaipur", location: "Jaipur to Udaipur", notes: "~6 hr scenic drive via Ajmer", status: "upcoming", lat: 24.5854, lng: 73.7125 },
+                            { time: "16:00", title: "Check-in: Taj Lake Palace", location: "Pichola, Udaipur", notes: "Boat transfer from Bansidhar Ghat", status: "upcoming", lat: 24.5762, lng: 73.6803 },
+                            { time: "19:00", title: "Sunset from Monsoon Palace", location: "Sajjangarh, Udaipur", notes: "Best views of Pichola Lake", status: "upcoming", lat: 24.5788, lng: 73.6494 }
+                        ]
+                    }
+                },
+                {
+                    dayNumber: 4,
+                    activities: {
+                        create: [
+                            { time: "10:00", title: "City Palace Udaipur", location: "City Palace Road, Udaipur", notes: "Largest palace complex in Rajasthan", status: "upcoming", lat: 24.5757, lng: 73.6830 },
+                            { time: "13:00", title: "Boat Ride on Lake Pichola", location: "Pichola Lake, Udaipur", notes: "Visit Jag Mandir island", status: "upcoming", lat: 24.5731, lng: 73.6789 },
+                            { time: "17:00", title: "Saheliyon ki Bari", location: "Udaipur", notes: "Garden of the Maidens", status: "upcoming", lat: 24.5962, lng: 73.6878 },
+                            { time: "20:00", title: "Dinner at Ambrai", location: "Amet Haveli, Udaipur", notes: "Lakeside dining with palace views", status: "upcoming", lat: 24.5759, lng: 73.6750 }
+                        ]
+                    }
+                },
+                {
+                    dayNumber: 5,
+                    activities: {
+                        create: [
+                            { time: "09:00", title: "Fateh Sagar Lake", location: "Fateh Sagar, Udaipur", notes: "Morning walk along promenade", status: "upcoming", lat: 24.5943, lng: 73.6742 },
+                            { time: "12:00", title: "Lunch at Jagat Niwas", location: "Chandpole, Udaipur", notes: "Rooftop restaurant with lake view", status: "upcoming", lat: 24.5791, lng: 73.6838 },
+                            { time: "15:00", title: "Departure", location: "Udaipur Airport", notes: "Flight AI-677 to Mumbai", status: "upcoming", lat: 24.6177, lng: 73.8961 }
+                        ]
+                    }
+                }
+            ]
+        }
     }
 ];
+
 
 async function main() {
     console.log('Cleaning existing data...');
