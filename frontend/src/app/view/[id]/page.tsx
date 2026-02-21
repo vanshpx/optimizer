@@ -313,93 +313,111 @@ function ClientViewContent({ id }: { id: string }) {
                     </div>
 
                     {/* Travel Bookings Card */}
-                    <div className="flex-[4] min-h-0 rounded-2xl shadow-md bg-white p-3.5 overflow-hidden flex flex-col">
-                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest mb-2.5 flex-shrink-0">Travel Bookings</p>
+                    <div className="flex-[4] min-h-0 rounded-2xl shadow-md bg-white p-4 overflow-hidden flex flex-col">
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3.5 flex-shrink-0">Travel Bookings</p>
 
-                        <div className="grid grid-cols-2 gap-2 flex-1 min-h-0">
+                        <div className="grid grid-cols-2 gap-3 flex-1 min-h-0">
 
-                            {/* TOP-LEFT: Arrival Flight */}
+                            {/* Arrival Flight */}
                             {(() => {
                                 const f = (itinerary.flights || []).find((fl: any) => fl.type === 'Departure');
                                 const from = origin !== 'Origin' ? origin : '—';
                                 const to = destination !== 'Destination' ? destination : (f?.airport || '—');
                                 return (
-                                    <div className="bg-gray-50 rounded-xl border border-gray-100 shadow-sm p-3.5 flex flex-col gap-1.5 border-l-[3px] border-l-blue-400 overflow-hidden">
-                                        <div className="flex items-center gap-1.5">
-                                            <PlaneTakeoff className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
-                                            <span className="text-[11px] font-semibold text-blue-500 uppercase tracking-wider">Arrival Flight</span>
+                                    <div className="booking-card booking-flight-arrival h-full">
+                                        <div className="booking-label label-flight">
+                                            <PlaneTakeoff className="w-3.5 h-3.5" />
+                                            Arrival Flight
                                         </div>
-                                        {f ? (<>
-                                            <p className="text-[15px] font-bold text-gray-900 truncate leading-snug">{from} → {to}</p>
-                                            {f.date && <p className="text-xs text-gray-500">{new Date(f.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>}
-                                            {(f.airline || f.flightNumber) && <p className="text-xs text-gray-500 truncate">{[f.airline, f.flightNumber].filter(Boolean).join(' • ')}</p>}
-                                            {(f.flightTime || f.arrivalTime) && <p className="text-sm font-semibold text-blue-600">{[f.flightTime, f.arrivalTime].filter(Boolean).join(' – ')}</p>}
-                                        </>) : <p className="text-xs text-gray-400 italic mt-auto">Not added</p>}
+                                        {f ? (
+                                            <div className="flex flex-col h-full">
+                                                <h4 className="booking-title truncate">{from} → {to}</h4>
+                                                <p className="booking-meta">
+                                                    {f.date && new Date(f.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                                                    {f.airline && ` • ${f.airline}`}
+                                                </p>
+                                                <div className="booking-time text-blue-600 mt-auto">
+                                                    {[f.flightTime, f.arrivalTime].filter(Boolean).join(' – ') || 'TBD'}
+                                                </div>
+                                            </div>
+                                        ) : <p className="text-xs text-gray-400 italic mt-auto">Not added</p>}
                                     </div>
                                 );
                             })()}
 
-                            {/* TOP-RIGHT: Return / Departure Flight */}
+                            {/* Departure Flight */}
                             {(() => {
                                 const f = (itinerary.flights || []).find((fl: any) => fl.type === 'Return');
                                 const from = destination !== 'Destination' ? destination : (f?.airport || '—');
                                 const to = origin !== 'Origin' ? origin : '—';
                                 return (
-                                    <div className="bg-gray-50 rounded-xl border border-gray-100 shadow-sm p-3.5 flex flex-col gap-1.5 border-l-[3px] border-l-violet-400 overflow-hidden">
-                                        <div className="flex items-center gap-1.5">
-                                            <PlaneLanding className="w-3.5 h-3.5 text-violet-400 flex-shrink-0" />
-                                            <span className="text-[11px] font-semibold text-violet-500 uppercase tracking-wider">Departure Flight</span>
+                                    <div className="booking-card booking-flight-departure h-full">
+                                        <div className="booking-label label-flight" style={{ color: '#7c3aed' }}>
+                                            <PlaneLanding className="w-3.5 h-3.5" />
+                                            Departure Flight
                                         </div>
-                                        {f ? (<>
-                                            <p className="text-[15px] font-bold text-gray-900 truncate leading-snug">{from} → {to}</p>
-                                            {f.date && <p className="text-xs text-gray-500">{new Date(f.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>}
-                                            {(f.airline || f.flightNumber) && <p className="text-xs text-gray-500 truncate">{[f.airline, f.flightNumber].filter(Boolean).join(' • ')}</p>}
-                                            {(f.flightTime || f.arrivalTime) && <p className="text-sm font-semibold text-violet-600">{[f.flightTime, f.arrivalTime].filter(Boolean).join(' – ')}</p>}
-                                        </>) : <p className="text-xs text-gray-400 italic mt-auto">Not added</p>}
+                                        {f ? (
+                                            <div className="flex flex-col h-full">
+                                                <h4 className="booking-title truncate">{from} → {to}</h4>
+                                                <p className="booking-meta">
+                                                    {f.date && new Date(f.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                                                    {f.airline && ` • ${f.airline}`}
+                                                </p>
+                                                <div className="booking-time text-violet-600 mt-auto">
+                                                    {[f.flightTime, f.arrivalTime].filter(Boolean).join(' – ') || 'TBD'}
+                                                </div>
+                                            </div>
+                                        ) : <p className="text-xs text-gray-400 italic mt-auto">Not added</p>}
                                     </div>
                                 );
                             })()}
 
-                            {/* BOTTOM-LEFT: Hotel */}
+                            {/* Hotel */}
                             {(() => {
                                 const stays: any[] = (itinerary.hotelStays as any[]) || [];
                                 const h = stays[0] ?? null;
-                                const extra = stays.length - 1;
                                 const nights = h?.checkIn && h?.checkOut
                                     ? Math.round((new Date(h.checkOut).getTime() - new Date(h.checkIn).getTime()) / 86400000)
                                     : null;
                                 return (
-                                    <div className="bg-gray-50 rounded-xl border border-gray-100 shadow-sm p-3.5 flex flex-col gap-1.5 border-l-[3px] border-l-emerald-400 overflow-hidden">
-                                        <div className="flex items-center justify-between">
-                                            <div className="flex items-center gap-1.5">
-                                                <BedDouble className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                                                <span className="text-[11px] font-semibold text-emerald-500 uppercase tracking-wider">Hotel Stay</span>
-                                            </div>
-                                            {extra > 0 && <span className="text-[11px] text-emerald-600 font-medium">+{extra} more</span>}
+                                    <div className="booking-card booking-hotel h-full">
+                                        <div className="booking-label label-hotel">
+                                            <BedDouble className="w-3.5 h-3.5" />
+                                            Hotel Stay
                                         </div>
-                                        {h ? (<>
-                                            <p className="text-[15px] font-bold text-gray-900 truncate leading-snug">{h.hotelName || 'Hotel'}</p>
-                                            {h.checkIn && <p className="text-xs text-gray-500">Check-in: {new Date(h.checkIn).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>}
-                                            {nights !== null && <p className="text-sm font-semibold text-emerald-600">{nights} night{nights !== 1 ? 's' : ''}</p>}
-                                        </>) : <p className="text-xs text-gray-400 italic mt-auto">Not added</p>}
+                                        {h ? (
+                                            <div className="flex flex-col h-full">
+                                                <h4 className="booking-title truncate">{h.hotelName || 'Hotel'}</h4>
+                                                <p className="booking-meta">
+                                                    {h.checkIn && new Date(h.checkIn).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                                                    {stays.length > 1 && ` • +${stays.length - 1} more`}
+                                                </p>
+                                                <div className="booking-time text-emerald-600 mt-auto">
+                                                    {nights !== null ? `${nights} Night${nights !== 1 ? 's' : ''}` : 'Duration TBD'}
+                                                </div>
+                                            </div>
+                                        ) : <p className="text-xs text-gray-400 italic mt-auto">Not added</p>}
                                     </div>
                                 );
                             })()}
 
-                            {/* BOTTOM-RIGHT: Emergency */}
-                            <div className="bg-gray-50 rounded-xl border border-gray-100 shadow-sm p-3.5 flex flex-col gap-1.5 border-l-[3px] border-l-red-400 overflow-hidden">
-                                <div className="flex items-center gap-1.5">
-                                    <Phone className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
-                                    <span className="text-[11px] font-semibold text-red-500 uppercase tracking-wider">Emergency</span>
+                            {/* Emergency */}
+                            <div className="booking-card booking-emergency h-full">
+                                <div className="booking-label label-emergency">
+                                    <Phone className="w-3.5 h-3.5" />
+                                    Emergency
                                 </div>
-                                <p className="text-[15px] font-bold text-gray-900 truncate leading-snug">
-                                    {(itinerary as any).agentName || 'Travel Agent'}
-                                </p>
-                                <p className="text-xs text-gray-400">For urgent help, call your agent</p>
-                                {(itinerary as any).agentPhone
-                                    ? <a href={`tel:${(itinerary as any).agentPhone}`} className="text-sm font-bold text-red-500 hover:text-red-600 mt-auto inline-flex items-center gap-1"><Phone className="w-3.5 h-3.5" />{(itinerary as any).agentPhone}</a>
-                                    : <p className="text-xs text-gray-400 italic mt-auto">Contact not added</p>
-                                }
+                                <div className="flex flex-col h-full">
+                                    <h4 className="booking-title truncate">{(itinerary as any).agentName || 'Travel Agent'}</h4>
+                                    <p className="booking-meta leading-tight">For urgent help, call your concierge</p>
+                                    <div className="booking-time text-red-600 mt-auto">
+                                        {(itinerary as any).agentPhone ? (
+                                            <a href={`tel:${(itinerary as any).agentPhone}`} className="hover:underline">
+                                                {(itinerary as any).agentPhone}
+                                            </a>
+                                        ) : 'Contact TBD'}
+                                    </div>
+                                </div>
                             </div>
 
                         </div>
