@@ -109,7 +109,6 @@ export default function DayBuilder({ days, onChange, startDate, stays = [], isAc
         <div className="space-y-8">
             <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                    <span className="w-2 h-8 bg-primary-600 rounded-full" />
                     Itinerary Schedule
                 </h2>
             </div>
@@ -177,7 +176,12 @@ export default function DayBuilder({ days, onChange, startDate, stays = [], isAc
             </div>
 
             {!isCompleted && !isActive && (
-                <Button onClick={addDay} size="lg" className="w-full py-6 text-base font-semibold bg-white text-gray-900 hover:bg-gray-50 border border-gray-200 hover:border-gray-300 shadow-sm transition-all">
+                <Button
+                    onClick={addDay}
+                    size="lg"
+                    variant="secondary"
+                    className="w-full py-6 text-base font-semibold bg-white text-gray-900 border-black hover:bg-gray-50 shadow-sm transition-all"
+                >
                     <Plus className="w-5 h-5 mr-2" />
                     Add Another Day
                 </Button>
