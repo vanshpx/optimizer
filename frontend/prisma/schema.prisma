@@ -27,6 +27,8 @@ model Itinerary {
   from        String?
   to          String?
   totalDays   Int?
+  agentName   String?
+  agentPhone  String?
   
   itineraryDays Day[]
   flights       Flight[]

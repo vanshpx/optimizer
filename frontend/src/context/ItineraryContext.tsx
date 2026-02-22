@@ -46,6 +46,8 @@ export interface Itinerary {
     to?: string;   // Destination City
     totalDays?: number;
     itineraryDays?: Day[]; // The full schedule
+    agentName?: string;
+    agentPhone?: string;
 }
 
 export interface Flight {
