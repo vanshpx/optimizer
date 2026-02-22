@@ -45,6 +45,8 @@ class EventType(Enum):
     USER_DISLIKE_NEXT   = "user_dislike_next"  # dislike next stop → request alternatives
     USER_REPLACE_POI    = "user_replace_poi"   # replace a specific stop with chosen alt
     USER_SKIP_CURRENT   = "user_skip_current"  # skip the currently active stop mid-visit
+    USER_REORDER         = "user_reorder"       # request a specific stop order
+    USER_MANUAL_REOPT    = "user_manual_reopt"  # explicit user request to re-optimize
     # ── User-state disruptions (hunger / fatigue) ─────────────────────────
     HUNGER_DISRUPTION   = "hunger_disruption"  # hunger_level ≥ HUNGER_TRIGGER_THRESHOLD
     FATIGUE_DISRUPTION  = "fatigue_disruption" # fatigue_level ≥ FATIGUE_TRIGGER_THRESHOLD
@@ -112,6 +114,8 @@ class EventHandler:
             EventType.USER_DISLIKE_NEXT:      self._handle_dislike_next,
             EventType.USER_REPLACE_POI:       self._handle_replace_poi,
             EventType.USER_SKIP_CURRENT:      self._handle_skip_current,
+            EventType.USER_REORDER:           self._handle_reorder,
+            EventType.USER_MANUAL_REOPT:      self._handle_manual_reopt,
             EventType.HUNGER_DISRUPTION:      self._handle_hunger,
             EventType.FATIGUE_DISRUPTION:     self._handle_fatigue,
         }
@@ -570,4 +574,34 @@ class EventHandler:
                 "hf_action":     "fatigue",
                 "fatigue_level": state.fatigue_level,
             },
+        )
+
+    def _handle_reorder(self, state: TripState, payload: dict) -> ReplanDecision:
+        """
+        payload: { "preferred_order": list[str]  (optional) }
+        User requests a specific stop ordering.  The PartialReplanner ACO
+        will re-sequence remaining stops; preferred_order is advisory only.
+        """
+        preferred = payload.get("preferred_order", [])
+        state.replan_pending = True
+        return ReplanDecision(
+            should_replan=True,
+            urgency="normal",
+            reason=f"User requested reorder of remaining stops: {preferred}",
+            updated_state=state,
+            metadata={"reorder_preferred": preferred},
+        )
+
+    def _handle_manual_reopt(self, state: TripState, payload: dict) -> ReplanDecision:
+        """
+        payload: { "reason": str  (optional) }
+        Explicit user-initiated full re-optimization of the rest of the day.
+        """
+        reason_text = payload.get("reason", "Manual re-optimization requested by user")
+        state.replan_pending = True
+        return ReplanDecision(
+            should_replan=True,
+            urgency="normal",
+            reason=reason_text,
+            updated_state=state,
         )

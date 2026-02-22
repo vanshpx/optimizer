@@ -531,12 +531,15 @@ def _run_reoptimize_demo(itinerary: Itinerary) -> None:
 
     # Step 3: User reports bad weather → replan to prefer indoor
     print(f"\n  Step 3: Weather update — 'rainy' reported")
-    new_plan = session.check_conditions(
+    session.check_conditions(
         weather_condition="rainy",
         next_stop_is_outdoor=True,
     )
-    if new_plan:
-        print(f"    → New plan: {[rp.name for rp in new_plan.route_points]}")
+    if session.pending_decision is not None:
+        print(f"    → Disruption pending. Auto-approving for demo…")
+        new_plan = session.resolve_pending("APPROVE")
+        if new_plan:
+            print(f"    → New plan: {[rp.name for rp in new_plan.route_points]}")
     else:
         print(f"    Severity below weather threshold — no replan.")
 
@@ -557,6 +560,9 @@ def _run_reoptimize_demo(itinerary: Itinerary) -> None:
     print("    crowd <level 0-1> <stop_name>")
     print("    weather <condition>   e.g. rainy / stormy / clear")
     print("    traffic <level 0-1> <stop_name> <delay_minutes>")
+    print("    approve               (after crowd/weather/traffic — apply & replan)")
+    print("    reject                (after crowd/weather/traffic — keep unchanged)")
+    print("    modify <action_index> (after crowd/weather/traffic — apply one action)")
     print("    summary")
     print("-" * 50)
 
@@ -598,6 +604,23 @@ def _run_reoptimize_demo(itinerary: Itinerary) -> None:
                 next_stop_name=stop,
                 estimated_traffic_delay_minutes=delay,
             )
+
+        elif cmd == "approve":
+            new_plan = session.resolve_pending("APPROVE")
+            if new_plan:
+                print(f"    → New plan: {[rp.name for rp in new_plan.route_points]}")
+
+        elif cmd == "reject":
+            session.resolve_pending("REJECT")
+
+        elif cmd == "modify" and len(parts) >= 2:
+            try:
+                idx = int(parts[1])
+                new_plan = session.resolve_pending("MODIFY", action_index=idx)
+                if new_plan:
+                    print(f"    → New plan: {[rp.name for rp in new_plan.route_points]}")
+            except ValueError:
+                print("  Usage: modify <action_index>  (integer)")
 
         elif cmd == "summary":
             import json

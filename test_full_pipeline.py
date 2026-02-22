@@ -383,11 +383,19 @@ def run_full_pipeline_test() -> None:
     _info(f"User threshold:         {session.thresholds.crowd:.0%}")
     _info(f"Threshold exceeded:     {crowd_reading > session.thresholds.crowd}")
 
-    b_plan = session.check_conditions(
+    session.check_conditions(
         crowd_level=crowd_reading,
         next_stop_name=next_stop_name,
         next_stop_is_outdoor=False,
     )
+    if session.pending_decision is not None:
+        _ok(f"Approval gate: CROWD pending_decision set ✓ "
+            f"({session.pending_decision.disruption_type})")
+        _info(f"Proposed actions: "
+              f"{[a.action_type for a in session.pending_decision.proposed_actions]}")
+        b_plan = session.resolve_pending("APPROVE")
+    else:
+        b_plan = None
     if b_plan:
         _ok(f"Crowd handled (reschedule). New stops: {[rp.name for rp in b_plan.route_points]}")
         _ok(f"'{next_stop_name}' deferred to quieter time — NOT permanently skipped")
@@ -408,10 +416,16 @@ def run_full_pipeline_test() -> None:
     _info(f"User threshold:      {session.thresholds.weather:.0%}")
     _info(f"Threshold exceeded:  {severity > session.thresholds.weather}")
 
-    c_plan = session.check_conditions(
+    session.check_conditions(
         weather_condition=weather_now,
         next_stop_is_outdoor=True,   # next stop is outdoor → deprioritize outdoor
     )
+    if session.pending_decision is not None:
+        _ok(f"Approval gate: WEATHER pending_decision set ✓ "
+            f"({session.pending_decision.disruption_type})")
+        c_plan = session.resolve_pending("APPROVE")
+    else:
+        c_plan = None
     if c_plan:
         _ok(f"Replan triggered. Outdoor stops deprioritized.")
         _ok(f"New stops: {[rp.name for rp in c_plan.route_points]}")
@@ -426,12 +440,18 @@ def run_full_pipeline_test() -> None:
     _info(f"User threshold: {session.thresholds.traffic:.0%}")
     _info(f"Threshold exceeded: {traffic_reading > session.thresholds.traffic}")
 
-    d_plan = session.check_conditions(
+    session.check_conditions(
         traffic_level=traffic_reading,
         next_stop_name="Lotus Temple",
         next_stop_is_outdoor=False,
         estimated_traffic_delay_minutes=traffic_delay,
     )
+    if session.pending_decision is not None:
+        _ok(f"Approval gate: TRAFFIC pending_decision set ✓ "
+            f"({session.pending_decision.disruption_type})")
+        d_plan = session.resolve_pending("APPROVE")
+    else:
+        d_plan = None
     if d_plan:
         _ok(f"Replan triggered. New stops: {[rp.name for rp in d_plan.route_points]}")
         _ok(f"Clock advanced by {traffic_delay} min to {session.state.current_time}")
@@ -472,6 +492,11 @@ def run_full_pipeline_test() -> None:
 
         new_plan = session.event(event_type, payload)
 
+        # User-triggered events now go through the approval gate — auto-approve
+        if session.pending_decision is not None:
+            _info("Gate active — auto-approving for test…")
+            new_plan = session.resolve_pending("APPROVE")
+
         if new_plan:
             stops = [rp.name for rp in new_plan.route_points]
             _ok(f"Replan executed. New plan: {stops}")
@@ -498,10 +523,6 @@ def run_full_pipeline_test() -> None:
         HungerFatigueAdvisor,
         HUNGER_TRIGGER_THRESHOLD,
         FATIGUE_TRIGGER_THRESHOLD,
-        HUNGER_RATE,
-        FATIGUE_RATE,
-        HIGH_EFFORT_MULT,
-        MED_EFFORT_MULT,
         NLP_HUNGER_FLOOR,
         NLP_FATIGUE_FLOOR,
         REST_RECOVERY_AMOUNT,
@@ -521,66 +542,64 @@ def run_full_pipeline_test() -> None:
     # ─────────────────────────────────────────────────────────────────────────
     # A: Deterministic accumulation — verify math after advance_to_stop
     # ─────────────────────────────────────────────────────────────────────────
-    _section("A — Deterministic accumulation (advance_to_stop)")
+    # A: Verify advance_to_stop does NOT auto-accumulate hunger/fatigue
+    # (hunger/fatigue are user-triggered only via NLP)
+    # ─────────────────────────────────────────────────────────────────────────
+    _section("A — advance_to_stop does NOT auto-accumulate hunger/fatigue")
 
     hf_day1  = itinerary.days[0]
     hf_stop1 = hf_day1.route_points[0] if hf_day1.route_points else None
 
-    if hf_stop1:
-        DT = 90   # 90-minute high-intensity stop
-        expected_hunger  = round(min(1.0, DT * HUNGER_RATE), 6)
-        expected_fatigue = round(min(1.0, DT * FATIGUE_RATE * HIGH_EFFORT_MULT), 6)
+    hunger_before  = hf_session.state.hunger_level
+    fatigue_before = hf_session.state.fatigue_level
 
+    if hf_stop1:
         hf_session.advance_to_stop(
             stop_name        = hf_stop1.name,
             arrival_time     = "09:00",
             lat              = 28.6560,
             lon              = 77.2410,
             cost             = hf_stop1.estimated_cost,
-            duration_minutes = DT,
+            duration_minutes = 90,
             intensity_level  = "high",
         )
-
-        got_hunger  = round(hf_session.state.hunger_level, 6)
-        got_fatigue = round(hf_session.state.fatigue_level, 6)
-
-        _ok(f"After {DT}-min high-intensity stop:")
-        _ok(f"  hunger_level  expected={expected_hunger:.4f}  got={got_hunger:.4f}")
-        _ok(f"  fatigue_level expected={expected_fatigue:.4f}  got={got_fatigue:.4f}")
-
-        assert abs(got_hunger  - expected_hunger)  < 1e-4, \
-            f"hunger accumulation wrong: expected {expected_hunger}, got {got_hunger}"
-        assert abs(got_fatigue - expected_fatigue) < 1e-4, \
-            f"fatigue accumulation wrong: expected {expected_fatigue}, got {got_fatigue}"
-        _ok("Accumulation math assertions passed ✓")
+        hunger_after  = hf_session.state.hunger_level
+        fatigue_after = hf_session.state.fatigue_level
+        _ok(f"After 90-min high-intensity stop: hunger={hunger_after:.2f}  fatigue={fatigue_after:.2f}")
+        assert hunger_after  == hunger_before,  \
+            f"hunger should NOT change on advance_to_stop: before={hunger_before} after={hunger_after}"
+        assert fatigue_after == fatigue_before, \
+            f"fatigue should NOT change on advance_to_stop: before={fatigue_before} after={fatigue_after}"
+        _ok("No auto-accumulation confirmed ✓")
     else:
-        _warn("No Day-1 stops available — skipping accumulation math check")
+        _warn("No Day-1 stops available — skipping accumulation check")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # B: Force hunger above threshold → check_conditions() fires HUNGER advisory
+    # B: Hunger triggered by user NLP message — USER_REPORT_DISRUPTION
     # ─────────────────────────────────────────────────────────────────────────
-    _section("B — Force hunger trigger via check_conditions()")
+    _section("B — Hunger triggered by user NLP message")
 
-    hf_session.state.hunger_level  = 0.75   # above HUNGER_TRIGGER_THRESHOLD (0.70)
-    hf_session.state.last_meal_time = "05:00"  # ensure no cooldown
-    hf_session.state.current_time  = "12:30"
+    # Start from low levels; fatigue within cooldown so only hunger fires
+    hf_session.state.hunger_level   = 0.10
+    hf_session.state.fatigue_level  = 0.10
+    hf_session.state.last_meal_time = "06:00"
+    hf_session.state.last_rest_time = "11:50"   # within cooldown → fatigue suppressed
+    hf_session.state.current_time   = "12:00"
 
-    hunger_replans_before = len(hf_session.replan_history)
-    hunger_plan = hf_session.check_conditions()   # no env inputs — only HF triggers
-    hunger_replans_after  = len(hf_session.replan_history)
+    hunger_msg = "I'm starving, I need food right now"
+    _info(f"User message: \"{hunger_msg}\"")
 
-    _ok(f"hunger_level set to 0.75 (threshold={HUNGER_TRIGGER_THRESHOLD})")
+    hunger_plan = hf_session.event(
+        EventType.USER_REPORT_DISRUPTION,
+        {"message": hunger_msg},
+    )
+
+    _ok(f"hunger_level after NLP raise + meal reset: {hf_session.state.hunger_level:.2f}")
     if hunger_plan:
         _ok(f"HUNGER_DISRUPTION fired → replan triggered")
         _ok(f"  New plan ({len(hunger_plan.route_points)} stops): "
             f"{[rp.name for rp in hunger_plan.route_points]}")
-        _ok(f"  hunger_level after meal reset: {hf_session.state.hunger_level:.2f}")
-        assert hf_session.state.hunger_level == 0.0, \
-            f"hunger_level should be 0 after meal reset, got {hf_session.state.hunger_level}"
-    else:
-        _warn("No hunger replan (stop pool may be empty — check pool state)")
 
-    # Verify DisruptionMemory got a HungerRecord
     hunger_mem = hf_session._disruption_memory.hunger_history
     _ok(f"DisruptionMemory.hunger_history: {len(hunger_mem)} record(s)")
     assert len(hunger_mem) >= 1, "At least 1 HungerRecord expected in DisruptionMemory"
@@ -589,29 +608,37 @@ def run_full_pipeline_test() -> None:
         f"  action={h_rec.action_taken}")
     assert h_rec.action_taken == "meal_inserted", \
         f"Expected action_taken='meal_inserted', got {h_rec.action_taken!r}"
-    _ok("Hunger DisruptionMemory assertions passed ✓")
+    assert hf_session.state.hunger_level == 0.0, \
+        f"hunger_level should be 0 after meal reset, got {hf_session.state.hunger_level}"
+    _ok("Hunger NLP trigger + DisruptionMemory assertions passed ✓")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # C: Force fatigue above threshold → check_conditions() fires FATIGUE advisory
+    # C: Fatigue triggered by user NLP message — USER_REPORT_DISRUPTION
     # ─────────────────────────────────────────────────────────────────────────
-    _section("C — Force fatigue trigger via check_conditions()")
+    _section("C — Fatigue triggered by user NLP message")
 
-    hf_session.state.fatigue_level  = 0.80   # above FATIGUE_TRIGGER_THRESHOLD (0.75)
-    hf_session.state.last_rest_time = "06:00"  # ensure no cooldown
+    # Hunger within cooldown so only fatigue fires
+    hf_session.state.hunger_level   = 0.10
+    hf_session.state.fatigue_level  = 0.10
+    hf_session.state.last_meal_time = hf_session.state.current_time  # suppress hunger
+    hf_session.state.last_rest_time = "06:00"
     hf_session.state.current_time   = "13:10"
 
-    fatigue_plan = hf_session.check_conditions()
+    fatigue_msg = "my feet are killing me, I need to sit down and rest"
+    _info(f"User message: \"{fatigue_msg}\"")
 
-    _ok(f"fatigue_level set to 0.80 (threshold={FATIGUE_TRIGGER_THRESHOLD})")
+    fatigue_plan = hf_session.event(
+        EventType.USER_REPORT_DISRUPTION,
+        {"message": fatigue_msg},
+    )
+
+    _ok(f"fatigue_level after NLP raise + rest: {hf_session.state.fatigue_level:.2f}")
     if fatigue_plan:
         _ok(f"FATIGUE_DISRUPTION fired → replan triggered")
         _ok(f"  New plan ({len(fatigue_plan.route_points)} stops): "
             f"{[rp.name for rp in fatigue_plan.route_points]}")
-        _ok(f"  fatigue_level after rest: {hf_session.state.fatigue_level:.2f}")
-        assert hf_session.state.fatigue_level < 0.80, \
+        assert hf_session.state.fatigue_level < 0.78, \
             "fatigue_level should decrease after rest break"
-    else:
-        _warn("No fatigue replan (stop pool may be empty)")
 
     fatigue_mem = hf_session._disruption_memory.fatigue_history
     _ok(f"DisruptionMemory.fatigue_history: {len(fatigue_mem)} record(s)")
@@ -623,7 +650,7 @@ def run_full_pipeline_test() -> None:
         f"Expected action_taken='rest_inserted', got {f_rec.action_taken!r}"
     assert f_rec.rest_duration is not None and f_rec.rest_duration > 0, \
         "rest_duration should be positive"
-    _ok("Fatigue DisruptionMemory assertions passed ✓")
+    _ok("Fatigue NLP trigger + DisruptionMemory assertions passed ✓")
 
     # ─────────────────────────────────────────────────────────────────────────
     # D: NLP trigger — free-text message with hunger + fatigue keywords

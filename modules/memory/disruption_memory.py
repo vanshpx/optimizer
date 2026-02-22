@@ -213,6 +213,28 @@ class DisruptionMemory:
             user_response  = user_response,
         ))
 
+    def record_generic(
+        self,
+        disruption_type: str,
+        severity:        float,
+        action_taken:    str,
+        user_response:   str,
+        impacted_stops:  list | None = None,
+    ) -> None:
+        """
+        Store a crowd / weather / traffic disruption outcome after the
+        user has responded via the approval gate (APPROVE / REJECT / MODIFY).
+        Mapped into replacement_history so it surfaces in summarize().
+        """
+        for stop in (impacted_stops or []):
+            self.replacement_history.append(ReplacementRecord(
+                original_stop     = stop,
+                replacement_stop  = "",
+                reason            = f"{disruption_type}:{user_response}",
+                S_pti_original    = severity,
+                S_pti_replacement = 0.0,
+            ))
+
     # ── Query helpers ─────────────────────────────────────────────────────────
 
     def weather_tolerance_level(self) -> float | None:

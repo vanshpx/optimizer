@@ -11,6 +11,8 @@
 TravelAgent System
 │
 ├── [INPUT]  python main.py --chat  ←─ Chat mode
+│
+│   python demo_reoptimizer.py  ←─ Hackathon demo (6 re-opt scenarios, Press-Enter pauses)
 │   └── Input Module                    modules/input/chat_intake.py
 │       └── ChatIntake.run()
 │           │
@@ -266,73 +268,159 @@ Stage 5 — Output + Continuous Learning
 Stage 6 — Mid-Trip Re-optimization  (runtime, optional)
     ReOptimizationSession.from_itinerary(itinerary, constraints)
 
-    [· Environmental Triggers (auto via ConditionMonitor) ·]
+    [· Environmental Triggers — APPROVAL GATE (auto-detect, manual apply) ·]
       check_conditions(crowd_level, traffic_level, weather_condition, ...)
         ConditionMonitor._derive_thresholds()  ← from SoftConstraints
           crowd threshold    = f(avoid_crowds, pace_preference)
           traffic threshold  = f(preferred_transport_mode)
           weather threshold  = f(character_traits, pace_preference)
-        If crowd_level > crowd_threshold:
-          → ENV_CROWD_HIGH → _handle_crowd_action() — 3 strategies:
+
+        ── PHASE 1: DETECT (no state mutation) ──────────────────────────────
+        If threshold exceeded:
+          1. Build ProposedAction list:
+               crowd → DEFER (reschedule_same_day/future_day) or KEEP_AS_IS
+               weather → DEFER (blocked outdoor) or SHIFT_TIME (risky)
+               traffic → DEFER (S_pti ≥ 0.65) or REPLACE (S_pti < 0.65)
+          2. Compute missed_value = avg(S_pti proxy) of impacted POIs
+          3. Select suggested_alternatives = top-3 remaining by rating
+          4. Store PendingDecision in session.pending_decision
+          5. Print structured payload panel
+          6. Return None  ← NO automatic replan
+
+        ── PHASE 2: RESOLVE (user must call explicitly) ──────────────────────
+        session.resolve_pending("APPROVE")
+          → route _raw_decisions through existing handlers:
+               crowd   → _handle_crowd_action()  — 3-strategy tree
+               weather → _handle_weather_action() — BLOCKED/DEFERRED
+               traffic → _handle_traffic_action() — DEFER/REPLACE
+          → record user_response="APPROVE" in DisruptionMemory
+          → return new DayPlan
+
+        session.resolve_pending("REJECT")
+          → no state mutation; record user_response="REJECT"
+          → return None
+
+        session.resolve_pending("MODIFY", action_index=<int>)
+          → apply chosen ProposedAction to TripState:
+               DEFER      → state.defer_stop(target_stop)
+               REPLACE    → state.mark_skipped + inject alternative
+               SHIFT_TIME → advance clock by details["delay_minutes"]
+               KEEP_AS_IS → no state change
+          → record user_response="MODIFY:<action_type>" in DisruptionMemory
+          → return new DayPlan (or None for KEEP_AS_IS)
+
+        HC enforcement: HC_pti = 0 POIs are always excluded from replans
+        regardless of user decision.
+
+        Handler detail (unchanged — only invoked after APPROVE):
+          _handle_crowd_action():
             1. reschedule_same_day  : defer + replan + undefer
             2. reschedule_future_day: move to current_day + 1
             3. inform_user          : HC cannot save it; advisory + user veto
-        If traffic_level > traffic_threshold:
-          → ENV_TRAFFIC_HIGH → _handle_traffic_action()
+          _handle_traffic_action():
             TrafficAdvisor.assess():
               Dij_new = Dij_base × (1 + traffic_level)    [Eq 12 variant]
               η_ij_new = S_pti / Dij_new
               S_pti ≥ 0.65 → DEFER (high value — keep for later)
               S_pti <  0.65 → REPLACE (geo-clustered nearby alternative)
-        If weather severity > weather_threshold:
-          → ENV_WEATHER_BAD → _handle_weather_action()
+          _handle_weather_action():
             WeatherAdvisor.classify():
               severity ≥ HC_UNSAFE_THRESHOLD (0.75) → BLOCKED (HC_pti = 0)
               threshold ≤ severity < 0.75            → DEFERRED (STi ×0.75)
               indoor pool ranked by η_ij = S_pti / Dij
 
-    [· User-reported Events (direct API) ·]
-      session.event(EventType.USER_SKIP,   {"stop_name": str})
-        → show WHAT YOU WILL MISS + BEST ALTERNATIVES advisory
-        → mark_skipped() + replan
+    [· User-Triggered Events — APPROVAL GATE (same pattern as environmental) ·]
+
+      ALL itinerary-modifying user actions now go through a mandatory gate.
+      ACO/FTRM MUST NOT run immediately after the trigger — only after APPROVE.
+
+      _USER_GATE_EVENTS (frozenset):
+        user_skip, user_skip_current, user_dislike_next, user_replace_poi,
+        user_add, user_pref, user_reorder, user_manual_reopt
+
+      ── PHASE 1: INTERCEPT (no state mutation) ─────────────────────────────
+      session.event(event_type, payload)    # event_type.value in gate set
+        1. Build impact analysis (FTRM variables):
+             feasibility_impact  : HC_pti proxy (pass / soft_fail / fail)
+             satisfaction_change : ΔS_pti = S_pti_new − S_pti_orig
+             time_change         : Δ duration (minutes)
+             cost_change         : Δ cost estimate
+             candidate_alternatives : _top_alternatives(exclude=[...]  n=3)
+        2. Build ProposedAction list:
+             user_skip / user_skip_current →
+               APPLY_CHANGE(skip), DEFER_CHANGE, KEEP_AS_IS
+             user_dislike_next →
+               SUGGEST_ALTERNATIVES, KEEP_AS_IS
+             user_replace_poi →
+               APPLY_CHANGE(replace), KEEP_AS_IS
+             user_add →
+               APPLY_CHANGE(add_to_pool), KEEP_AS_IS
+             user_pref / user_reorder / user_manual_reopt →
+               APPLY_CHANGE(all_remaining), KEEP_AS_IS
+        3. Store PendingDecision (with _user_event_type, _user_event_payload,
+             impact_summary) in session.pending_decision
+        4. Print "USER ACTION — AWAITING YOUR DECISION" panel
+             includes IMPACT SUMMARY block from step 1
+        5. Return None  ← NO execution; ACO/FTRM frozen
+
+      ── PHASE 2: RESOLVE (user must call explicitly) ─────────────────────
+      session.resolve_pending("APPROVE")
+        → reconstruct EventType from _user_event_type string
+        → call _execute_user_event(ev_type, _user_event_payload):
+             USER_PREFERENCE_CHANGE → apply sc_update + rebuild monitor
+             USER_ADD_STOP          → inject AttractionRecord into pool
+             crowd / user_edit      → route to existing handlers
+             else                   → _do_replan()
+        → record user_response="APPROVE" in DisruptionMemory
+        → return new DayPlan
+
+      session.resolve_pending("REJECT")
+        → no state mutation; record user_response="REJECT"
+        → return None
+
+      session.resolve_pending("MODIFY", action_index=<int>)
+        → APPLY_CHANGE / SUGGEST_ALTERNATIVES  → same as APPROVE
+        → DEFER_CHANGE  → state.defer_stop(target_stop) + replan
+        → KEEP_AS_IS    → no state change; return None
+        → record user_response="MODIFY:<action>" in DisruptionMemory
+
+    [· Non-gated Events (immediate execution) ·]
       session.event(EventType.USER_DELAY,  {"delay_minutes": int})
         → advance clock; replan if delay ≥ 20 min
-      session.event(EventType.USER_PREFERENCE_CHANGE, {"field": str, "value": Any})
-        → apply to SoftConstraints; rebuild ConditionMonitor; replan
-      session.event(EventType.USER_ADD_STOP, {"attraction": AttractionRecord})
-        → inject into remaining pool; replan
       session.event(EventType.VENUE_CLOSED, {"stop_name": str})
         → mark_skipped() + immediate high-urgency replan
+      session.event(EventType.USER_REPORT_DISRUPTION, {"message": str})
+        → NLP-only path: HungerFatigueAdvisor.check_nlp_trigger()
+             raises hunger_level / fatigue_level if keywords detected
+             triggers meal break / rest if levels exceed thresholds
+      session.event(EventType.USER_HUNGER_DISRUPTION, {})
+        session.event(EventType.USER_FATIGUE_DISRUPTION, {})
+        → deterministic path: immediate HF handlers
 
-    [· User-Edit Events (direct API — new) ·]
-      session.event(EventType.USER_DISLIKE_NEXT, {...position...})
-        → UserEditHandler.dislike_next_poi()
-            peek next unvisited RoutePoint
-            score remaining pool (full HC+SC) excluding visited ∪ skipped
-            ∪ deferred ∪ {disliked_stop}
-            filter: HC_pti > 0 AND STi ≤ remaining_minutes
-            rank: S_pti DESC, Dij ASC (tiebreak)
-            → print DISLIKE ADVISORY panel (no state mutation)
-      session.event(EventType.USER_REPLACE_POI, {"replacement_record": AttractionRecord})
-        → UserEditHandler.replace_poi()
-            validate in order (fail-fast):
-              1. not already visited/skipped
-              2. HC_pti > 0
-              3. Dij + STi ≤ remaining_minutes
-              4. entry_cost ≤ budget_remaining
-              5. no duplicate in future plan
-              6. total plan time ≤ Tmax (DAY_END_TIME = 20:00)
-            on accept: swap RoutePoint + walk downstream to recompute
-              arrival_time = prev.departure + Dij
-              departure_time = arrival + STi
-            → record to DisruptionMemory; commit plan; trigger replan
-      session.event(EventType.USER_SKIP_CURRENT, {"stop_name": str})
-        → UserEditHandler.skip_current_poi()
-            mark_skipped() (permanent — distinct from USER_SKIP which
-              targets the NEXT stop; SKIP_CURRENT aborts an ongoing visit)
-            replan from same lat/lon (no travel cost consumed)
-            if S_pti ≥ HIGH_SPTI_MEMORY_THRESHOLD (0.70):
-              → write preference signal to DisruptionMemory
+    [· User-Edit action logic (called via _execute_user_event after APPROVE) ·]
+      USER_DISLIKE_NEXT:
+        UserEditHandler.dislike_next_poi()
+          print DISLIKE ADVISORY panel (top alternatives by η_ij = S_pti/Dij)
+      USER_REPLACE_POI:
+        UserEditHandler.replace_poi()  — 6-step validate-then-swap:
+          1. not already visited/skipped
+          2. HC_pti > 0
+          3. Dij + STi ≤ remaining_minutes
+          4. entry_cost ≤ budget_remaining
+          5. no duplicate in future plan
+          6. total plan time ≤ Tmax (DAY_END_TIME = 20:00)
+          on accept: downstream arrival/departure times recomputed
+      USER_SKIP_CURRENT:
+        mark_skipped() — permanent; aborts ongoing visit; replan
+      USER_SKIP:
+        mark_skipped(next stop) + replan  (target = NEXT unvisited stop)
+      USER_ADD_STOP:
+        inject AttractionRecord into pool + replan
+      USER_PREFERENCE_CHANGE:
+        update SoftConstraints; rebuild ConditionMonitor; replan
+      USER_REORDER / USER_MANUAL_REOPT:
+        set state.replan_pending = True; full replan via PartialReplanner
+
 
     [· Replan execution ·]
       PartialReplanner.replan():
@@ -792,18 +880,28 @@ stop_name
 
 #### Accumulation mechanisms
 
-**Mechanism 1 — Deterministic (after every `advance_to_stop`):**
+> **Policy:** Hunger and fatigue disruptions are **user-triggered only**.
+> Mechanism 1 updates internal state for SC5 scoring adjustments but does **not**
+> fire a disruption automatically. Disruptions fire exclusively when the user
+> reports them (Mechanism 2 — NLP path via `USER_REPORT_DISRUPTION`).
+
+**Mechanism 1 — Deterministic state tracking (after every `advance_to_stop`):**
 ```
 hunger_level  ← min(1, hunger  + ΔT × HUNGER_RATE)        HUNGER_RATE = 1/180 /min
 fatigue_level ← min(1, fatigue + ΔT × FATIGUE_RATE × k)   FATIGUE_RATE = 1/420 /min
   k = 1.8 (high) | 1.3 (medium) | 1.0 (low)
+
+Purpose: feeds SC5 penalty calculations only — does NOT trigger a disruption event.
 ```
 
 **Mechanism 2 — NLP trigger (inside `session.event()` for `USER_REPORT_DISRUPTION`):**
 ```
 hunger keywords  → hunger_level  = max(hunger_level,  0.72)
 fatigue keywords → fatigue_level = max(fatigue_level, 0.78)
+
+If raised level ≥ threshold → HUNGER_DISRUPTION / FATIGUE_DISRUPTION fires.
 ```
+Example trigger phrases: `"I'm starving"`, `"need food break"`, `"my feet hurt"`, `"need rest"`, etc.
 
 **Mechanism 3 — Behavioural inference:**
 ```
@@ -813,7 +911,10 @@ user sets pace → "relaxed"    → fatigue_level += 0.08
 
 #### Disruption triggers
 
-| EventType | Threshold | Action |
+Disruptions are checked **only inside the `USER_REPORT_DISRUPTION` handler** after
+the NLP hook has raised the levels via Mechanism 2.
+
+| EventType | Threshold (checked after NLP raise) | Action |
 |---|---|---|
 | `HUNGER_DISRUPTION` | `hunger_level ≥ 0.70` | Insert meal stop, advance clock +45 min, reset hunger, LocalRepair |
 | `FATIGUE_DISRUPTION` | `fatigue_level ≥ 0.75` | Insert rest break, advance clock +20 min, reduce fatigue by 0.40, LocalRepair |
@@ -847,12 +948,14 @@ Spti_adjusted  = HCpti × SCpti_adjusted                  (Eq 4 variant)
 
 ### 9.11 Optimization Trigger Map (Hunger / Fatigue)
 
+> Hunger / fatigue disruptions are **user-triggered only** — the system does not
+> auto-fire them from `check_conditions()`. The only entry point is the user
+> sending a natural-language message that contains hunger or fatigue keywords.
+
 | Trigger | EventType | ActionType | Replanner policy |
 |---|---|---|---|
-| `hunger_level ≥ 0.70` | `HUNGER_DISRUPTION` | `INSERT_MEAL_STOP` | LocalRepair |
-| `fatigue_level ≥ 0.75` | `FATIGUE_DISRUPTION` | `INSERT_REST_BREAK` | LocalRepair |
-| NLP hunger keyword | `USER_REPORT_DISRUPTION` → NLP hook | `INSERT_MEAL_STOP` | LocalRepair |
-| NLP fatigue keyword | `USER_REPORT_DISRUPTION` → NLP hook | `INSERT_REST_BREAK` | LocalRepair |
+| NLP hunger keyword in user message | `USER_REPORT_DISRUPTION` → NLP hook → `hunger_level ≥ 0.70` | `INSERT_MEAL_STOP` | LocalRepair |
+| NLP fatigue keyword in user message | `USER_REPORT_DISRUPTION` → NLP hook → `fatigue_level ≥ 0.75` | `INSERT_REST_BREAK` | LocalRepair |
 | User skips high-intensity | behavioural inference | `fatigue_level += 0.10` | No replan (state update only) |
 | Pace → relaxed | behavioural inference | `fatigue_level += 0.08` | No replan (state update only) |
 | Meal stop visited | `advance_to_stop` + `on_meal_completed` | `hunger_level = 0` | No replan (state update only) |

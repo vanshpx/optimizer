@@ -13,8 +13,14 @@ Lifecycle:
     # Advance through stops normally
     session.advance_to_stop("City Museum")
 
-    # Check environmental readings → auto-replan if thresholds exceeded
-    new_plan = session.check_conditions(crowd_level=0.7, weather="rainy")
+    # Check environmental readings → build approval-gate payload; NO auto-replan
+    session.check_conditions(crowd_level=0.7, weather_condition="rainy")
+    # → displays PendingDecision panel; returns None; sets session.pending_decision
+
+    # User reviews the payload, then resolves:
+    new_plan = session.resolve_pending("APPROVE")   # apply + replan
+    # session.resolve_pending("REJECT")             # keep unchanged
+    # session.resolve_pending("MODIFY", action_index=0)  # apply one action
 
     # Or fire a user event directly
     new_plan = session.event(EventType.USER_SKIP, {"stop_name": "Heritage Fort"})
@@ -24,6 +30,7 @@ Lifecycle:
 """
 
 from __future__ import annotations
+from dataclasses import dataclass, field as _dc_field
 from datetime import date
 from typing import Optional
 
@@ -45,6 +52,52 @@ from modules.reoptimization.user_edit_handler import (
 from modules.reoptimization.hunger_fatigue_advisor import (
     HungerFatigueAdvisor, HungerAdvisoryResult, FatigueAdvisoryResult,
 )
+
+
+@dataclass
+class ProposedAction:
+    """One candidate action inside a PendingDecision payload."""
+    # Environmental gate: "DEFER" | "REPLACE" | "SHIFT_TIME" | "KEEP_AS_IS"
+    # User action gate:   "APPLY_CHANGE" | "SUGGEST_ALTERNATIVES" | "DEFER_CHANGE" | "KEEP_AS_IS"
+    action_type: str
+    target_stop: str
+    details: dict = _dc_field(default_factory=dict)
+
+
+@dataclass
+class PendingDecision:
+    """
+    Frozen snapshot presented to the user before any state mutation.
+    Covers both environmental disruptions (CROWD/WEATHER/TRAFFIC) and
+    user-triggered actions (SKIP/REPLACE/ADD/REORDER/…).
+    Stored in session.pending_decision until the user calls resolve_pending().
+    """
+    disruption_type: str              # "CROWD"|"WEATHER"|"TRAFFIC"|"USER_ACTION"
+    impacted_pois: list               # list[str]
+    reason: str
+    missed_value: float               # avg S_pti proxy of removed/deferred stops
+    proposed_actions: list            # list[ProposedAction]
+    suggested_alternatives: list      # top-3 by S_pti from remaining pool
+    severity: float                   # 0.0 for user actions; raw reading for env
+    _raw_decisions: list = _dc_field(default_factory=list)   # env ReplanDecisions
+    # ── User-action gate fields (set only when gate covers a user event) ─────
+    _user_event_type: str = ""        # EventType.value of the intercepted event
+    _user_event_payload: dict = _dc_field(default_factory=dict)
+    impact_summary: dict = _dc_field(default_factory=dict)
+    # feasibility_change, satisfaction_change, time_change, cost_change
+
+
+# Event types that MUST go through the approval gate before any state mutation
+_USER_GATE_EVENTS: frozenset = frozenset({
+    "user_skip",
+    "user_skip_current",
+    "user_dislike_next",
+    "user_replace_poi",
+    "user_add",
+    "user_pref",
+    "user_reorder",
+    "user_manual_reopt",
+})
 
 
 class ReOptimizationSession:
@@ -99,6 +152,10 @@ class ReOptimizationSession:
         # Pending user decision when stop is crowded on last day
         # Set to a dict with keys: stop_name, place_importance, crowd_level
         self.crowd_pending_decision: dict | None = None
+
+        # Pending disruption awaiting user APPROVE / REJECT / MODIFY
+        # Set by check_conditions(); cleared by resolve_pending()
+        self.pending_decision: Optional[PendingDecision] = None
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -158,16 +215,11 @@ class ReOptimizationSession:
             self.state.move_to(lat, lon)
         self.state.mark_visited(stop_name, cost)
 
-        # Accumulate hunger and fatigue from this stop
-        self._hf_advisor.accumulate(self.state, intensity_level, duration_minutes)
-
         # Update remaining pool
         self._remaining = [a for a in self._remaining if a.name not in self.state.visited_stops]
         self._condition_monitor.update_remaining(self._remaining)
         print(f"  [Session] Visited '{stop_name}' at {self.state.current_time}. "
-              f"Remaining stops: {len(self._remaining)}  "
-              f"| Hunger: {self.state.hunger_level:.0%}  "
-              f"| Fatigue: {self.state.fatigue_level:.0%}")
+              f"Remaining stops: {len(self._remaining)}")
 
     # ── Environmental condition check ────────────────────────────────────────
 
@@ -182,11 +234,27 @@ class ReOptimizationSession:
     ) -> Optional[DayPlan]:
         """
         Feed real-time environmental data into ConditionMonitor.
-        If any threshold is exceeded, triggers a PartialReplanner run.
 
-        Returns:
-            New DayPlan if a replan was triggered, else None.
+        APPROVAL GATE — if a threshold is exceeded the method does NOT
+        automatically replan.  Instead it:
+          1. Freezes the current itinerary (no state mutation).
+          2. Builds a structured PendingDecision payload.
+          3. Prints the decision panel for the user.
+          4. Stores the decision in self.pending_decision.
+          5. Returns None.
+
+        The caller must then call:
+            session.resolve_pending("APPROVE")   — apply + replan
+            session.resolve_pending("REJECT")    — keep unchanged
+            session.resolve_pending("MODIFY", action_index=<int>)
         """
+        # Guard: only one pending decision at a time
+        if self.pending_decision is not None:
+            print("  [Gate] A disruption is already awaiting your decision.")
+            print("  [Gate] Call resolve_pending(\"APPROVE\"|\"REJECT\"|"
+                  "\"MODIFY\") first.")
+            return None
+
         decisions = self._condition_monitor.check(
             state=self.state,
             crowd_level=crowd_level,
@@ -197,67 +265,664 @@ class ReOptimizationSession:
             estimated_traffic_delay_minutes=estimated_traffic_delay_minutes,
         )
 
-        triggered = [d for d in decisions if d.should_replan]
-
-        result: Optional[DayPlan] = None
-
-        if not triggered:
-            # Check for crowd decisions that need user input (inform_user strategy)
+        # Collect candidates: triggered disruptions + crowd inform_user
+        candidates: list = [d for d in decisions if d.should_replan]
+        if not candidates:
             for d in decisions:
                 if d.metadata.get("crowd_action") == "inform_user":
-                    result = self._handle_crowd_action(d)
-            # Do NOT return here — fall through to HF trigger check below
+                    candidates.append(d)
+        if not candidates:
+            return None
 
+        # ── Classify by type ────────────────────────────────────────────────
+        crowd_ds   = [d for d in candidates if d.metadata.get("crowd_action")]
+        weather_ds = [d for d in candidates if d.metadata.get("weather_action")]
+        traffic_ds = [d for d in candidates if d.metadata.get("traffic_action")]
+
+        impacted_pois: list[str]     = []
+        proposed_actions: list       = []
+        reason_parts: list[str]      = []
+        severity: float              = 0.0
+        disruption_type: str         = "UNKNOWN"
+
+        if crowd_ds:
+            disruption_type = "CROWD"
+            for cd in crowd_ds:
+                m   = cd.metadata
+                stp = m.get("stop_name", next_stop_name or "next stop")
+                act = m.get("crowd_action", "inform_user")
+                clv = m.get("crowd_level", crowd_level or 0.0)
+                thr = m.get("threshold",   self.thresholds.crowd)
+                severity = max(severity, clv)
+                if stp not in impacted_pois:
+                    impacted_pois.append(stp)
+                reason_parts.append(
+                    f"crowd {clv:.0%} > threshold {thr:.0%} at '{stp}'"
+                )
+                if act == "reschedule_same_day":
+                    proposed_actions.append(
+                        ProposedAction("DEFER", stp, {"timing": "later today"})
+                    )
+                elif act == "reschedule_future_day":
+                    proposed_actions.append(
+                        ProposedAction("DEFER", stp,
+                                       {"target_day": self.state.current_day + 1})
+                    )
+                else:  # inform_user
+                    proposed_actions.append(
+                        ProposedAction("KEEP_AS_IS", stp, {})
+                    )
+
+        elif weather_ds:
+            disruption_type = "WEATHER"
+            for wd in weather_ds:
+                m         = wd.metadata
+                condition = m.get("condition", weather_condition or "bad_weather")
+                sev       = m.get("severity",  0.0)
+                thr       = m.get("threshold", self.thresholds.weather)
+                severity  = max(severity, sev)
+                reason_parts.append(
+                    f"{condition} (severity {sev:.0%} > threshold {thr:.0%})"
+                )
+                # Impacted: the next outdoor stop (if known) plus any
+                # outdoor stops visible in the remaining pool
+                if next_stop_is_outdoor and next_stop_name:
+                    if next_stop_name not in impacted_pois:
+                        impacted_pois.append(next_stop_name)
+                        proposed_actions.append(
+                            ProposedAction("DEFER", next_stop_name, {})
+                        )
+                for rec in self._remaining:
+                    if (getattr(rec, "is_outdoor", False)
+                            and rec.name not in impacted_pois):
+                        impacted_pois.append(rec.name)
+                        proposed_actions.append(
+                            ProposedAction("DEFER", rec.name, {})
+                        )
+
+        elif traffic_ds:
+            disruption_type = "TRAFFIC"
+            for td in traffic_ds:
+                m     = td.metadata
+                tlv   = m.get("traffic_level", traffic_level or 0.0)
+                thr   = m.get("threshold",     self.thresholds.traffic)
+                delay = m.get("delay_minutes",
+                               estimated_traffic_delay_minutes)
+                severity = max(severity, tlv)
+                stp  = next_stop_name or "current stop"
+                reason_parts.append(
+                    f"traffic {tlv:.0%} > threshold {thr:.0%},"
+                    f" delay +{delay} min"
+                )
+                if stp not in impacted_pois:
+                    impacted_pois.append(stp)
+                # Heuristic: if stop exists in remaining pool use its
+                # category-based score proxy; default to DEFER
+                stop_rec = next(
+                    (a for a in self._remaining if a.name == stp), None
+                )
+                if stop_rec is not None:
+                    # Use rating as a simple Spti proxy (0-1 normalised)
+                    s_proxy = min(1.0, max(0.0, stop_rec.rating / 5.0))
+                    if s_proxy >= 0.65:
+                        proposed_actions.append(
+                            ProposedAction("DEFER", stp,
+                                           {"reason": "high value — kept for later"})
+                        )
+                    else:
+                        proposed_actions.append(
+                            ProposedAction("REPLACE", stp,
+                                           {"reason": "low value — swap for nearby alt"})
+                        )
+                else:
+                    proposed_actions.append(ProposedAction("DEFER", stp, {}))
+
+        # ── Compute missed_value (avg S_pti proxy of impacted stops) ─────────
+        scores_for_impacted = []
+        for name in impacted_pois:
+            rec = next((a for a in self._remaining if a.name == name), None)
+            if rec is not None:
+                scores_for_impacted.append(min(1.0, max(0.0, rec.rating / 5.0)))
+        missed_value = (
+            sum(scores_for_impacted) / len(scores_for_impacted)
+            if scores_for_impacted else 0.0
+        )
+
+        # ── Suggested alternatives (top-3 remaining not already impacted) ────
+        alts_pool = [
+            a for a in self._remaining
+            if a.name not in impacted_pois
+            and a.name not in self.state.visited_stops
+            and a.name not in self.state.skipped_stops
+        ]
+        alts_pool.sort(key=lambda a: a.rating, reverse=True)
+        suggested_alternatives = [a.name for a in alts_pool[:3]]
+
+        # ── Build and store PendingDecision ──────────────────────────────────
+        self.pending_decision = PendingDecision(
+            disruption_type     = disruption_type,
+            impacted_pois       = impacted_pois,
+            reason              = " | ".join(reason_parts),
+            missed_value        = missed_value,
+            proposed_actions    = proposed_actions,
+            suggested_alternatives = suggested_alternatives,
+            severity            = severity,
+            _raw_decisions      = candidates,
+        )
+
+        self._print_pending_decision(self.pending_decision)
+        return None   # ← NO automatic replan; user must call resolve_pending()
+
+    # ── Approval gate — user must call this after check_conditions() ─────────
+
+    def resolve_pending(
+        self,
+        user_decision: str,
+        action_index: int | None = None,
+    ) -> Optional[DayPlan]:
+        """
+        Apply user's response to the last detected disruption.
+
+        Args:
+            user_decision:  "APPROVE" | "REJECT" | "MODIFY"
+            action_index:   (MODIFY only) index into pending_decision.proposed_actions
+
+        Returns:
+            New DayPlan if a replan was triggered, else None.
+        """
+        if self.pending_decision is None:
+            print("  [Gate] No pending disruption. Call check_conditions() first.")
+            return None
+
+        pd = self.pending_decision
+        W  = 64
+
+        # ── REJECT — keep itinerary unchanged ───────────────────────────────
+        if user_decision.upper() == "REJECT":
+            print(f"\n  [Gate] {'═' * W}")
+            print(f"  [Gate] Decision: REJECT — itinerary unchanged.")
+            print(f"  [Gate] {'═' * W}\n")
+            self._disruption_memory.record_generic(
+                disruption_type = pd.disruption_type,
+                severity        = pd.severity,
+                action_taken    = "REJECT",
+                user_response   = "REJECT",
+                impacted_stops  = pd.impacted_pois,
+            )
+            self.pending_decision = None
+            return None
+
+        # ── APPROVE — execute the pending action ───────────────────────────────
+        if user_decision.upper() == "APPROVE":
+            print(f"\n  [Gate] {'═' * W}")
+            print(f"  [Gate] Decision: APPROVE — applying change…")
+            print(f"  [Gate] {'═' * W}\n")
+            result: Optional[DayPlan] = None
+
+            if pd._user_event_type:
+                # User-triggered action: reconstruct EventType and execute
+                ev_type = next(
+                    (e for e in EventType if e.value == pd._user_event_type), None
+                )
+                if ev_type:
+                    result = self._execute_user_event(ev_type, pd._user_event_payload)
+            else:
+                # Environmental trigger: route through normal handlers
+                for d in pd._raw_decisions:
+                    if d.metadata.get("crowd_action"):
+                        result = self._handle_crowd_action(d)
+                    elif d.metadata.get("weather_action"):
+                        result = self._handle_weather_action(d)
+                    elif d.metadata.get("traffic_action"):
+                        result = self._handle_traffic_action(d)
+                    else:
+                        result = self._do_replan(reasons=[d.reason])
+
+            self._disruption_memory.record_generic(
+                disruption_type = pd.disruption_type or pd._user_event_type,
+                severity        = pd.severity,
+                action_taken    = "APPROVE",
+                user_response   = "APPROVE",
+                impacted_stops  = pd.impacted_pois,
+            )
+            self.pending_decision = None
+            return result
+
+        # ── MODIFY — apply one specific ProposedAction ───────────────────────
+        if user_decision.upper() == "MODIFY":
+            if action_index is None:
+                print("  [Gate] MODIFY requires action_index=<int>.")
+                return None
+            if action_index < 0 or action_index >= len(pd.proposed_actions):
+                print(f"  [Gate] action_index {action_index} out of range "
+                      f"(0–{len(pd.proposed_actions)-1}).")
+                return None
+
+            chosen = pd.proposed_actions[action_index]
+            print(f"\n  [Gate] {'═' * W}")
+            print(f"  [Gate] Decision: MODIFY → "
+                  f"{chosen.action_type}  '{chosen.target_stop}'")
+            if chosen.details:
+                print(f"  [Gate] Details: {chosen.details}")
+            print(f"  [Gate] {'═' * W}\n")
+
+            if chosen.action_type in ("APPLY_CHANGE", "SUGGEST_ALTERNATIVES"):
+                # For user-triggered events this is equivalent to APPROVE
+                if pd._user_event_type:
+                    ev_type = next(
+                        (e for e in EventType if e.value == pd._user_event_type), None
+                    )
+                    mod_result: Optional[DayPlan] = (
+                        self._execute_user_event(ev_type, pd._user_event_payload)
+                        if ev_type else None
+                    )
+                else:
+                    mod_result = self._do_replan(reasons=[f"MODIFY:{chosen.action_type}"])
+
+            elif chosen.action_type == "DEFER_CHANGE":
+                if chosen.target_stop:
+                    self.state.defer_stop(chosen.target_stop)
+                mod_result = self._do_replan(reasons=["MODIFY:DEFER_CHANGE"])
+
+            elif chosen.action_type == "DEFER":
+                self.state.defer_stop(chosen.target_stop)
+                mod_result = self._do_replan(reasons=["MODIFY:DEFER"])
+
+            elif chosen.action_type == "REPLACE":
+                self.state.mark_skipped(chosen.target_stop)
+                # Inject first suggested alternative into the pool
+                if pd.suggested_alternatives:
+                    alt_name = pd.suggested_alternatives[0]
+                    alt_rec  = next(
+                        (a for a in self._remaining if a.name == alt_name), None
+                    )
+                    if alt_rec is None:
+                        from modules.tool_usage.attraction_tool import AttractionTool
+                        all_recs = AttractionTool().fetch(self._city)
+                        alt_rec  = next(
+                            (a for a in all_recs if a.name == alt_name), None
+                        )
+                    if alt_rec and alt_rec not in self._remaining:
+                        self._remaining.append(alt_rec)
+                        self._condition_monitor.update_remaining(self._remaining)
+                mod_result = self._do_replan(reasons=["MODIFY:REPLACE"])
+
+            elif chosen.action_type == "SHIFT_TIME":
+                delay = chosen.details.get("delay_minutes", 30) if chosen.details else 30
+                h, m = map(int, self.state.current_time.split(":"))
+                total = h * 60 + m + delay
+                self.state.advance_time(f"{total // 60:02d}:{total % 60:02d}")
+                mod_result = self._do_replan(reasons=["MODIFY:SHIFT_TIME"])
+
+            elif chosen.action_type == "KEEP_AS_IS":
+                mod_result = None
+
+            else:
+                mod_result = self._do_replan(reasons=[f"MODIFY:{chosen.action_type}"])
+
+            self._disruption_memory.record_generic(
+                disruption_type = pd.disruption_type or pd._user_event_type,
+                severity        = pd.severity,
+                action_taken    = f"MODIFY:{chosen.action_type}",
+                user_response   = f"MODIFY:{chosen.action_type}",
+                impacted_stops  = pd.impacted_pois,
+            )
+            self.pending_decision = None
+
+            if chosen.action_type == "KEEP_AS_IS":
+                print(f"  [Gate] Proceeding as-is — no replan.")
+                return None
+
+            return mod_result
+
+        print(f"  [Gate] Unknown decision '{user_decision}'. "
+              "Use APPROVE | REJECT | MODIFY.")
+        return None
+
+    def _print_pending_decision(self, pd: PendingDecision) -> None:
+        """Print the structured disruption payload for user review."""
+        W   = 54
+        sep = "═" * W
+
+        if pd._user_event_type:
+            header_line = "✋  USER ACTION — AWAITING YOUR DECISION"
         else:
-            # Separate crowd decisions that need special handling
-            crowd_decisions = [
-                d for d in triggered if d.metadata.get("crowd_action")
-            ]
-            weather_decisions = [
-                d for d in triggered if d.metadata.get("weather_action")
-            ]
-            traffic_decisions = [
-                d for d in triggered if d.metadata.get("traffic_action")
-            ]
-            other_decisions = [
-                d for d in triggered
-                if not d.metadata.get("crowd_action")
-                and not d.metadata.get("weather_action")
-                and not d.metadata.get("traffic_action")
-            ]
+            header_line = "⚠  DISRUPTION DETECTED — AWAITING YOUR DECISION"
 
-            # Handle crowd rescheduling first
-            for cd in crowd_decisions:
-                result = self._handle_crowd_action(cd)
+        print(f"\n  {sep}")
+        print(f"  {header_line}")
+        print(f"  {sep}")
+        if pd._user_event_type:
+            print(f"  Action    : {pd._user_event_type}")
+        print(f"  Type      : {pd.disruption_type}")
+        print(f"  Reason    : {pd.reason}")
+        print(f"  Impacted  : {pd.impacted_pois}")
+        if not pd._user_event_type:
+            print(f"  Value at risk (avg S_pti proxy): {pd.missed_value:.2f}")
+        print()
 
-            # Handle weather disruptions
-            for wd in weather_decisions:
-                result = self._handle_weather_action(wd)
+        if pd.impact_summary:
+            print(f"  IMPACT SUMMARY:")
+            for k, v in pd.impact_summary.items():
+                print(f"    {k:<26}: {v}")
+            print()
 
-            # Handle traffic disruptions
-            for td in traffic_decisions:
-                result = self._handle_traffic_action(td)
+        print(f"  PROPOSED ACTIONS:")
+        for i, act in enumerate(pd.proposed_actions):
+            detail_str = (
+                "  →  " + "  ".join(f"{k}: {v}" for k, v in act.details.items())
+                if act.details else ""
+            )
+            print(f"    [{i}] {act.action_type:<20}  {act.target_stop}{detail_str}")
 
-            # Then handle other triggers (generic) if any
-            if other_decisions:
-                reasons = [d.reason for d in other_decisions]
-                deprioritize_outdoor = any(
-                    d.metadata.get("deprioritize_outdoor", False) for d in other_decisions
+        if pd.suggested_alternatives:
+            print()
+            print(f"  BEST ALTERNATIVES: {pd.suggested_alternatives}")
+
+        print()
+        print(f"  → session.resolve_pending(\"APPROVE\")")
+        print(f"     session.resolve_pending(\"REJECT\")")
+        if pd.proposed_actions:
+            print(f"     session.resolve_pending(\"MODIFY\", action_index=0..{len(pd.proposed_actions)-1})")
+        print(f"  {sep}\n")
+
+
+    # ── User-action approval gate helpers ─────────────────────────────────────
+
+    def _next_unvisited_stop_name(self) -> str:
+        """Return name of the first non-visited/skipped/deferred stop in current plan."""
+        if not self.state.current_day_plan:
+            return ""
+        excluded = (self.state.visited_stops
+                    | self.state.skipped_stops
+                    | self.state.deferred_stops)
+        for rp in self.state.current_day_plan.route_points:
+            if rp.name not in excluded:
+                return rp.name
+        return ""
+
+    def _spti_proxy(self, name: str) -> float:
+        """Quick S_pti proxy = attraction.rating / 5.0, capped [0, 1]."""
+        rec = next((a for a in self._remaining if a.name == name), None)
+        if rec is None:
+            return 0.0
+        return min(1.0, max(0.0, rec.rating / 5.0))
+
+    def _top_alternatives(self, exclude: list[str], n: int = 3) -> list[str]:
+        """Top-n remaining stops by rating, excluding listed names."""
+        excluded_set = (set(exclude)
+                        | self.state.visited_stops
+                        | self.state.skipped_stops)
+        pool = [a for a in self._remaining if a.name not in excluded_set]
+        pool.sort(key=lambda a: a.rating, reverse=True)
+        return [a.name for a in pool[:n]]
+
+    def _build_user_action_pending(
+        self,
+        event_type: "EventType",
+        payload: dict,
+    ) -> "PendingDecision":
+        """
+        Freeze itinerary state and compute impact analysis for a user-triggered
+        change request.  Returns a PendingDecision — no state is mutated.
+
+        Impact fields per event type:
+          USER_SKIP / USER_SKIP_CURRENT:
+            HC_pti proxy = 1 (skip is feasible)
+            ΔSpti        = −S_pti(target)
+            missed_value = S_pti(target)
+            proposed     = [APPLY_CHANGE(skip), DEFER_CHANGE, KEEP_AS_IS]
+
+          USER_DISLIKE_NEXT:
+            impacted     = next unvisited stop
+            proposed     = [APPLY_CHANGE(show_alts), KEEP_AS_IS]
+
+          USER_REPLACE_POI:
+            impacted     = [original, replacement]
+            ΔSpti        = S_pti(replacement) − S_pti(original)
+            proposed     = [APPLY_CHANGE(replace), KEEP_AS_IS]
+
+          USER_ADD_STOP:
+            impacted     = [new_stop]
+            ΔSpti        = +S_pti(new_stop)
+            proposed     = [APPLY_CHANGE(add), KEEP_AS_IS]
+
+          USER_PREFERENCE_CHANGE / USER_REORDER / USER_MANUAL_REOPT:
+            impacted     = all remaining stops (labels only)
+            proposed     = [APPLY_CHANGE, KEEP_AS_IS]
+        """
+        et = event_type.value
+
+        # ── USER_SKIP / USER_SKIP_CURRENT ────────────────────────────────────
+        if et in ("user_skip", "user_skip_current"):
+            stop = payload.get("stop_name", "") or self._next_unvisited_stop_name()
+            rec  = next((a for a in self._remaining if a.name == stop), None)
+            s    = self._spti_proxy(stop)
+            alts = self._top_alternatives([stop])
+            dur  = getattr(rec, "estimated_duration_minutes", 60) if rec else 60
+            cost = getattr(rec, "estimated_cost", 0.0) if rec else 0.0
+            return PendingDecision(
+                disruption_type    = "USER_ACTION",
+                impacted_pois      = [stop] if stop else [],
+                reason             = (f"User requested skip of '{stop}' "
+                                      f"(S_pti proxy={s:.2f})"),
+                missed_value       = s,
+                proposed_actions   = [
+                    ProposedAction("APPLY_CHANGE",  stop,
+                                   {"op": "skip", "HC_pti": 1,
+                                    "delta_Spti": round(-s, 3)}),
+                    ProposedAction("DEFER_CHANGE",  stop,
+                                   {"timing": "later today"}),
+                    ProposedAction("KEEP_AS_IS",    stop, {}),
+                ],
+                suggested_alternatives = alts,
+                severity           = 0.0,
+                _user_event_type   = et,
+                _user_event_payload = payload,
+                impact_summary     = {
+                    "feasibility_change":  1,
+                    "satisfaction_change": round(-s, 3),
+                    "time_change":         f"-{dur} min (freed)",
+                    "cost_change":         f"-{cost:.0f}",
+                },
+            )
+
+        # ── USER_DISLIKE_NEXT ─────────────────────────────────────────────────
+        if et == "user_dislike_next":
+            stop = self._next_unvisited_stop_name()
+            s    = self._spti_proxy(stop)
+            alts = self._top_alternatives([stop])
+            return PendingDecision(
+                disruption_type    = "USER_ACTION",
+                impacted_pois      = [stop] if stop else [],
+                reason             = (f"User dislikes next stop '{stop}' "
+                                      f"(S_pti proxy={s:.2f}) — show alternatives"),
+                missed_value       = s,
+                proposed_actions   = [
+                    ProposedAction("SUGGEST_ALTERNATIVES", stop,
+                                   {"op": "dislike_show_alts",
+                                    "delta_Spti": round(-s, 3)}),
+                    ProposedAction("KEEP_AS_IS", stop, {}),
+                ],
+                suggested_alternatives = alts,
+                severity           = 0.0,
+                _user_event_type   = et,
+                _user_event_payload = payload,
+                impact_summary     = {
+                    "feasibility_change":  1,
+                    "satisfaction_change": round(-s, 3),
+                    "time_change":         "0 min (no skip yet)",
+                    "cost_change":         "0",
+                },
+            )
+
+        # ── USER_REPLACE_POI ─────────────────────────────────────────────────
+        if et == "user_replace_poi":
+            replacement = payload.get("replacement_record")
+            orig_name   = self._next_unvisited_stop_name()
+            s_orig      = self._spti_proxy(orig_name)
+            s_rep       = min(1.0, max(0.0,
+                              getattr(replacement, "rating", 0.0) / 5.0)
+                          ) if replacement else 0.0
+            delta_s     = round(s_rep - s_orig, 3)
+            rep_name    = getattr(replacement, "name", "?") if replacement else "?"
+            orig_cost   = getattr(
+                next((a for a in self._remaining if a.name == orig_name), None),
+                "estimated_cost", 0.0)
+            rep_cost    = getattr(replacement, "estimated_cost", 0.0) if replacement else 0.0
+            orig_dur    = getattr(
+                next((a for a in self._remaining if a.name == orig_name), None),
+                "estimated_duration_minutes", 60)
+            rep_dur     = getattr(replacement, "estimated_duration_minutes", 60) if replacement else 60
+            # HC_pti proxy: replacement passes if HC_pti > 0 (rating > 0 heuristic)
+            hc_proxy    = 1 if s_rep > 0 else 0
+            return PendingDecision(
+                disruption_type    = "USER_ACTION",
+                impacted_pois      = [orig_name, rep_name],
+                reason             = (f"Replace '{orig_name}' → '{rep_name}' "
+                                      f"ΔSpti={delta_s:+.2f}  HC_pti={hc_proxy}"),
+                missed_value       = s_orig,
+                proposed_actions   = [
+                    ProposedAction("APPLY_CHANGE", orig_name,
+                                   {"replacement": rep_name,
+                                    "HC_pti": hc_proxy,
+                                    "delta_Spti": delta_s}),
+                    ProposedAction("KEEP_AS_IS",   orig_name, {}),
+                ],
+                suggested_alternatives = self._top_alternatives([orig_name, rep_name]),
+                severity           = 0.0,
+                _user_event_type   = et,
+                _user_event_payload = payload,
+                impact_summary     = {
+                    "feasibility_change":  hc_proxy,
+                    "satisfaction_change": delta_s,
+                    "time_change":    f"{rep_dur - orig_dur:+d} min",
+                    "cost_change":    f"{rep_cost - orig_cost:+.0f}",
+                },
+            )
+
+        # ── USER_ADD_STOP ─────────────────────────────────────────────────────
+        if et == "user_add":
+            new_attr = payload.get("attraction") or payload.get("new_attraction")
+            if new_attr is None:
+                return PendingDecision(
+                    disruption_type="USER_ACTION", impacted_pois=[],
+                    reason="Add-stop request with no attraction record.",
+                    missed_value=0.0, proposed_actions=[], suggested_alternatives=[],
+                    severity=0.0, _user_event_type=et, _user_event_payload=payload,
                 )
-                result = self._do_replan(
-                    reasons=reasons,
-                    deprioritize_outdoor=deprioritize_outdoor,
+            name  = getattr(new_attr, "name", "?")
+            s_new = min(1.0, max(0.0, getattr(new_attr, "rating", 0.0) / 5.0))
+            dur   = getattr(new_attr, "estimated_duration_minutes", 60)
+            cost  = getattr(new_attr, "estimated_cost", 0.0)
+            return PendingDecision(
+                disruption_type    = "USER_ACTION",
+                impacted_pois      = [name],
+                reason             = (f"Add '{name}' to pool "
+                                      f"(S_pti proxy={s_new:.2f})"
+                                      f"  STi≈{dur} min  cost≈{cost:.0f}"),
+                missed_value       = 0.0,
+                proposed_actions   = [
+                    ProposedAction("APPLY_CHANGE", name,
+                                   {"op": "add_to_pool",
+                                    "delta_Spti": round(s_new, 3),
+                                    "STi": dur, "cost": cost}),
+                    ProposedAction("KEEP_AS_IS", name, {}),
+                ],
+                suggested_alternatives = [],
+                severity           = 0.0,
+                _user_event_type   = et,
+                _user_event_payload = payload,
+                impact_summary     = {
+                    "feasibility_change":  1,
+                    "satisfaction_change": round(s_new, 3),
+                    "time_change":         f"+{dur} min",
+                    "cost_change":         f"+{cost:.0f}",
+                },
+            )
+
+        # ── USER_PREFERENCE_CHANGE / USER_REORDER / USER_MANUAL_REOPT ─────────
+        field = payload.get("field", "")
+        value = payload.get("value", "")
+        reason_text = {
+            "user_pref":          (f"Preference change: {field} → {value}"),
+            "user_reorder":       (f"Reorder request: {payload.get('preferred_order', [])}"),
+            "user_manual_reopt":  (payload.get("reason", "Manual re-optimization requested")),
+        }.get(et, f"User action: {et}")
+        remaining_labels = [
+            a.name for a in self._remaining
+            if a.name not in self.state.visited_stops
+            and a.name not in self.state.skipped_stops
+        ][:5]
+        return PendingDecision(
+            disruption_type    = "USER_ACTION",
+            impacted_pois      = remaining_labels,
+            reason             = reason_text,
+            missed_value       = 0.0,
+            proposed_actions   = [
+                ProposedAction("APPLY_CHANGE", "all_remaining",
+                               {"field": field, "value": str(value)}),
+                ProposedAction("KEEP_AS_IS",   "all_remaining", {}),
+            ],
+            suggested_alternatives = [],
+            severity           = 0.0,
+            _user_event_type   = et,
+            _user_event_payload = payload,
+            impact_summary     = {
+                "feasibility_change":  1,
+                "satisfaction_change": "recomputed after change",
+                "time_change":         "recomputed",
+                "cost_change":         "unchanged",
+            },
+        )
+
+    def _execute_user_event(
+        self,
+        event_type: "EventType",
+        payload: dict,
+    ) -> "Optional[DayPlan]":
+        """
+        Execute a user event directly, bypassing the approval gate.
+        Called by resolve_pending() after the user approves.
+        Contains the original dispatch logic from event() minus the gate check.
+        """
+        decision = self._event_handler.handle(event_type, payload, self.state)
+
+        # Apply preference change to constraints before replanning
+        if (event_type == EventType.USER_PREFERENCE_CHANGE
+                and decision.metadata.get("sc_update")):
+            for f_name, f_val in decision.metadata["sc_update"].items():
+                self.constraints = self._partial_replanner.apply_preference_update(
+                    self.constraints, f_name, f_val
                 )
+            self._condition_monitor = ConditionMonitor(
+                self.constraints.soft, self._remaining, total_days=self.total_days
+            )
+            self.thresholds = self._condition_monitor.thresholds
 
-        # ── Hunger / Fatigue trigger check ──────────────────────────────────
-        hf_triggers = self._hf_advisor.check_triggers(self.state)
-        for trigger_type in hf_triggers:
-            if trigger_type == "hunger_disruption":
-                result = self._handle_hunger_disruption()
-            elif trigger_type == "fatigue_disruption":
-                result = self._handle_fatigue_disruption()
+        # Handle add-stop: inject AttractionRecord into pool
+        if (event_type == EventType.USER_ADD_STOP
+                and decision.metadata.get("new_attraction")):
+            new_attr = decision.metadata["new_attraction"]
+            if new_attr not in self._remaining:
+                self._remaining.append(new_attr)
+            self._condition_monitor.update_remaining(self._remaining)
 
-        return result
+        if not decision.should_replan:
+            if decision.metadata.get("crowd_action") == "inform_user":
+                return self._handle_crowd_action(decision)
+            if decision.metadata.get("user_edit_action"):
+                return self._handle_user_edit_action(decision)
+            print(f"  [Session] Event '{event_type.value}': no replan needed. "
+                  f"({decision.reason})")
+            return None
+
+        if decision.metadata.get("crowd_action"):
+            return self._handle_crowd_action(decision)
+        if decision.metadata.get("user_edit_action"):
+            return self._handle_user_edit_action(decision)
+
+        return self._do_replan(reasons=[decision.reason])
 
     # ── Direct event API ─────────────────────────────────────────────────────
 
@@ -269,56 +934,44 @@ class ReOptimizationSession:
         """
         Fire a single disruption event (user-reported or external).
 
+        User-triggered changes that modify the itinerary REQUIRE approval:
+            event() → builds PendingDecision → returns None
+            resolve_pending("APPROVE"|"REJECT"|"MODIFY") → applies change
+
+        Non-gated events (VENUE_CLOSED, USER_DELAY, USER_REPORT_DISRUPTION)
+        are executed immediately.
+
         Returns:
-            New DayPlan if the event required a replan, else None.
+            New DayPlan if a non-gated event triggered a replan; else None.
         """
-        # ── USER_SKIP: show advisory (WHAT YOU WILL MISS + alternatives) first ─
-        if event_type == EventType.USER_SKIP:
-            stop_name = payload.get("stop_name", "")
-            if stop_name:
-                advisory = self._crowd_advisory.build(
-                    crowded_stop      = stop_name,
-                    crowd_level       = 1.0,
-                    threshold         = self.thresholds.crowd,
-                    strategy          = "inform_user",
-                    remaining_pool    = self._remaining,
-                    constraints       = self.constraints,
-                    current_lat       = self.state.current_lat,
-                    current_lon       = self.state.current_lon,
-                    current_time_str  = self.state.current_time,
-                    remaining_minutes = self.state.remaining_minutes_today(),
-                    city              = self._city,
-                    target_day        = None,
-                    top_n             = 3,
-                )
-                self._print_crowd_advisory(advisory, header="SKIP ADVISORY")
+        # ── APPROVAL GATE: user-triggered itinerary modifications ─────────────
+        if event_type.value in _USER_GATE_EVENTS:
+            if self.pending_decision is not None:
+                print("  [Gate] A decision is already pending — call "
+                      "resolve_pending() first.")
+                return None
+            pd = self._build_user_action_pending(event_type, payload)
+            self.pending_decision = pd
+            self._print_pending_decision(pd)
+            return None
 
         # ── NLP hook: detect hunger/fatigue signals in free-text reports ──────
         if event_type == EventType.USER_REPORT_DISRUPTION:
             self._hf_advisor.check_nlp_trigger(
                 payload.get("message", ""), self.state
             )
+            hf_triggers = self._hf_advisor.check_triggers(self.state)
+            hf_result = None
+            for trigger_type in hf_triggers:
+                if trigger_type == "hunger_disruption":
+                    hf_result = self._handle_hunger_disruption()
+                elif trigger_type == "fatigue_disruption":
+                    hf_result = self._handle_fatigue_disruption()
+            if hf_triggers:
+                return hf_result
 
+        # ── Non-gated events: route directly ─────────────────────────────────
         decision = self._event_handler.handle(event_type, payload, self.state)
-
-        # Apply preference change to constraints before replanning
-        if event_type == EventType.USER_PREFERENCE_CHANGE and decision.metadata.get("sc_update"):
-            for field, value in decision.metadata["sc_update"].items():
-                self.constraints = self._partial_replanner.apply_preference_update(
-                    self.constraints, field, value
-                )
-            # Rebuild monitor with new soft constraints
-            self._condition_monitor = ConditionMonitor(
-                self.constraints.soft, self._remaining, total_days=self.total_days
-            )
-            self.thresholds = self._condition_monitor.thresholds
-
-        # Handle add-stop: insert the new AttractionRecord into the pool
-        if event_type == EventType.USER_ADD_STOP and decision.metadata.get("new_attraction"):
-            new_attr = decision.metadata["new_attraction"]
-            if new_attr not in self._remaining:
-                self._remaining.append(new_attr)
-            self._condition_monitor.update_remaining(self._remaining)
 
         if not decision.should_replan:
             # Check for crowd inform_user
@@ -1018,6 +1671,23 @@ class ReOptimizationSession:
 
     def summary(self) -> dict:
         """Return a concise session summary for display or logging."""
+        pd = self.pending_decision
+        pending_info = None
+        if pd is not None:
+            pending_info = {
+                "disruption_type":      pd.disruption_type,
+                "reason":               pd.reason,
+                "impacted_pois":        pd.impacted_pois,
+                "missed_value":         round(pd.missed_value, 3),
+                "severity":             round(pd.severity, 3),
+                "proposed_actions": [
+                    {"action": a.action_type, "stop": a.target_stop,
+                     "details": a.details}
+                    for a in pd.proposed_actions
+                ],
+                "suggested_alternatives": pd.suggested_alternatives,
+                "status": "AWAITING_DECISION",
+            }
         return {
             "current_time":         self.state.current_time,
             "current_day":          self.state.current_day,
@@ -1033,5 +1703,6 @@ class ReOptimizationSession:
             "replans_triggered":    len(self.replan_history),
             "disruption_log":       self.state.disruption_log,
             "crowd_pending":        self.crowd_pending_decision,
+            "pending_decision":     pending_info,
             "disruption_memory":    self._disruption_memory.summarize(),
         }
