@@ -4,7 +4,7 @@
 
 NextStep is an AI-powered travel planning system. You describe your trip in plain English — destination, dates, budget, interests — and it builds a fully optimized, day-by-day itinerary. If something goes wrong during the trip (bad weather, crowded attraction, traffic jam), the system re-plans on the fly without losing your preferences.
 
-The frontend is a web dashboard for travel agents to create, view, and monitor itineraries. The backend is a Python pipeline that uses mathematical optimization (FTRM + Ant Colony Optimization) to score and route attractions.
+The frontend is a web dashboard for travel agents to create and monitor itineraries. The backend is a Python pipeline that uses mathematical optimization (FTRM + Ant Colony Optimization) to score and route attractions.
 
 ---
 
